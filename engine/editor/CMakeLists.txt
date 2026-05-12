@@ -30,6 +30,7 @@ target_link_libraries(mge_editor
         imgui::imgui
         mge::rhi
         mge::core
+        mge::profile
     PRIVATE
         mge::platform
         mge::rhi_metal

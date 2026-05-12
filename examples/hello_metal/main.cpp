@@ -2926,6 +2926,19 @@ int run_windowed(Args a) {
             es.particles        = k_particle_count;
             es.tube_bone_count  = kSkinnedTubeBones;
 
+            // Engine toggles — the editor's Render Settings panel writes through
+            // these pointers so changes propagate to the next frame.
+            es.rt_enabled       = nullptr;   // demo's rt_active is captured by FG lambda
+            es.overlay_enabled  = nullptr;   // a.no_overlay forced when --editor
+            es.demo_mode        = &a.demo_mode;
+            // hzb_enabled is hardcoded on; expose when we wire a runtime toggle.
+
+            // Profiler snapshot — same data the M11 overlay used. Capture once
+            // so the editor sees the latest zones without re-querying.
+            static thread_local std::vector<mge::profile::ZoneStats> profiler_snap;
+            profiler_snap = mge::profile::Profiler::get().snapshot();
+            es.cpu_zones = &profiler_snap;
+
             // Sphere bindings — editor reads/writes albedo/metallic/roughness/AO
             // in place. Material edits show on the next frame's gbuffer.
             for (std::size_t i = 0; i < k_spheres.size(); ++i) {

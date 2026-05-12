@@ -5,6 +5,10 @@
 #include "imgui_internal.h"
 
 #include "mge/core/version.h"
+#include "mge/profile/profiler.h"
+
+#include <algorithm>
+#include <string>
 
 #include <cstdio>
 #include <string>
@@ -581,6 +585,190 @@ void draw_inspector_empty(const char* line) {
     ImGui::PopStyleColor();
 }
 
+// ──── Bottom dock panels ───────────────────────────────────────────────
+void draw_console_panel() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_3)));
+    ImGui::BeginChild("##console.body", ImVec2(0, 0));
+    {
+        ScopedMonoFont _;
+        // Placeholder log lines — M21 wires this to mge::core::Logger.
+        struct Line { const char* lvl; ImU32 lvl_col; const char* msg; };
+        static const Line lines[] = {
+            {"info", tokens::fg_3,  "MetalGameEngine 0.0.1 (build=debug)"},
+            {"info", tokens::fg_3,  "device: Apple M-series, instance_cap=1026  RT=yes"},
+            {"info", tokens::fg_3,  "RT: on (TLAS over 1018 instances)"},
+            {"info", tokens::fg_3,  "loop: sim 60Hz, target 120fps"},
+            {"info", tokens::fg_3,  "editor: on"},
+            {"info", tokens::fg_3,  "fonts: SFNS.ttf + SFNSMono.ttf @ 2x"},
+            {"warn", tokens::warn,  "M21 will route real engine logs here."},
+        };
+        for (const auto& l : lines) {
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+            ImGui::TextUnformatted("[ ]");
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0f, s(tokens::sp_3));
+            ImGui::PushStyleColor(ImGuiCol_Text, col(l.lvl_col));
+            ImGui::Text("%-4s", l.lvl);
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0f, s(tokens::sp_4));
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_1));
+            ImGui::TextUnformatted(l.msg);
+            ImGui::PopStyleColor();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void draw_profiler_panel(const EngineState& state) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::BeginChild("##profiler.body", ImVec2(0, 0));
+
+    if (!state.cpu_zones || state.cpu_zones->empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextWrapped("No CPU zones recorded yet.");
+        ImGui::PopStyleColor();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    // Column header.
+    const float col_name = s(180.0f);
+    const float col_last = s(76.0f);
+    const float col_avg  = s(76.0f);
+    {
+        ScopedMonoFont _;
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextUnformatted("ZONE");
+        ImGui::SameLine(col_name);
+        ImGui::TextUnformatted("LAST ms");
+        ImGui::SameLine(col_name + col_last);
+        ImGui::TextUnformatted("AVG  ms");
+        ImGui::SameLine(col_name + col_last + col_avg);
+        ImGui::TextUnformatted("BAR (last vs 5 ms budget)");
+        ImGui::PopStyleColor();
+    }
+    ImGui::Spacing();
+
+    // Find the max value across all zones for relative bar scaling.
+    double max_ms = 5.0;     // hint a 5 ms frame-time budget
+    for (const auto& z : *state.cpu_zones) {
+        if (z.last_ms > max_ms) max_ms = z.last_ms;
+        if (z.avg_ms  > max_ms) max_ms = z.avg_ms;
+    }
+
+    auto* dl = ImGui::GetWindowDrawList();
+    for (const auto& z : *state.cpu_zones) {
+        const float row_h = s(20.0f);
+        const ImVec2 p   = ImGui::GetCursorScreenPos();
+
+        {
+            ScopedMonoFont _;
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
+            ImGui::TextUnformatted(std::string(z.name).c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine(col_name);
+        {
+            ScopedMonoFont _;
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_1));
+            ImGui::Text("%6.3f", z.last_ms);
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine(col_name + col_last);
+        {
+            ScopedMonoFont _;
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
+            ImGui::Text("%6.3f", z.avg_ms);
+            ImGui::PopStyleColor();
+        }
+
+        // Bar: last value as filled chunk, avg as a marker line.
+        const float bar_x0 = p.x + col_name + col_last + col_avg;
+        const float bar_x1 = p.x + ImGui::GetContentRegionAvail().x
+                              + col_name + col_last + col_avg;
+        const float bar_w  = std::max(0.0f, bar_x1 - bar_x0 - s(tokens::sp_4));
+        const float track_h = s(8.0f);
+        const float track_y = p.y + (row_h - track_h) * 0.5f;
+        const float last_frac = static_cast<float>(z.last_ms / max_ms);
+        const float avg_frac  = static_cast<float>(z.avg_ms  / max_ms);
+        const float fill_w    = bar_w * last_frac;
+        const float avg_x     = bar_x0 + bar_w * avg_frac;
+
+        dl->AddRectFilled(ImVec2(bar_x0, track_y),
+                            ImVec2(bar_x0 + bar_w, track_y + track_h),
+                            tokens::bg_2);
+        dl->AddRectFilled(ImVec2(bar_x0, track_y),
+                            ImVec2(bar_x0 + fill_w, track_y + track_h),
+                            tokens::acc_bg_2);
+        dl->AddLine(ImVec2(bar_x0 + fill_w, track_y),
+                     ImVec2(bar_x0 + fill_w, track_y + track_h),
+                     tokens::acc, 1.0f);
+        dl->AddLine(ImVec2(avg_x, track_y - s(2.0f)),
+                     ImVec2(avg_x, track_y + track_h + s(2.0f)),
+                     tokens::fg_4, 1.0f);
+
+        ImGui::Dummy(ImVec2(0.0f, row_h - ImGui::GetTextLineHeight()));
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void draw_render_settings_panel(const EngineState& state) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::BeginChild("##rs.body", ImVec2(0, 0));
+
+    auto toggle_row = [](const char* label, bool* value) {
+        prop_row_begin(label);
+        if (value) {
+            ImGui::Checkbox("##t", value);
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+            ImGui::TextUnformatted("—");
+            ImGui::PopStyleColor();
+        }
+        prop_row_end();
+    };
+
+    static bool render_open  = true;
+    static bool feature_open = true;
+
+    section("FEATURES", &feature_open);
+    if (feature_open) {
+        toggle_row("editor",   nullptr);   // always-on while we're in the editor
+        toggle_row("rt",       state.rt_enabled);
+        toggle_row("hzb",      state.hzb_enabled);
+        toggle_row("overlay",  state.overlay_enabled);
+        toggle_row("demo cycle", state.demo_mode);
+    }
+
+    section("RENDER", &render_open);
+    if (render_open) {
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextWrapped("Sliders for sun / bloom / exposure / ambient land in M21 once the engine cvars are exposed mutably.");
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void draw_dock_placeholder(const char* tab) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+    ImGui::BeginChild("##phx", ImVec2(0, 0));
+    ImGui::TextWrapped("%s panel wires up in M20.b.", tab);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+}
+
 void draw_inspector(const EngineState& state, Selection& sel) {
     draw_panel_header("INSPECTOR", "");
     switch (sel.kind) {
@@ -685,13 +873,16 @@ void draw_chrome(const EngineState& state, Selection& sel) {
         ImGui::SameLine(0.0f, 0.0f);
     }
     ImGui::PopStyleVar(2);
-    ImGui::NewLine();
 
-    // Tab body placeholder.
-    ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-    ImGui::SetCursorPos(ImVec2(s(tokens::sp_5), s(48.0f)));
-    ImGui::Text("M18 placeholder · %s panel wires up in M19/M20.", tabs[active_tab]);
-    ImGui::PopStyleColor();
+    // Tab body — route by index.
+    switch (active_tab) {
+        case 0: draw_console_panel();                 break;
+        case 1: draw_profiler_panel(state);           break;
+        case 2: draw_dock_placeholder("FrameGraph");  break;
+        case 3: draw_render_settings_panel(state);    break;
+        case 4: draw_dock_placeholder("Shader Reload"); break;
+        default: break;
+    }
 
     ImGui::EndChild();
     ImGui::PopStyleColor();
