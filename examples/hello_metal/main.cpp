@@ -53,6 +53,115 @@ namespace {
 // camera distance and dispatches one draw per LOD level.
 constexpr std::size_t kSphereLodCount = 3;
 
+// ---------- M16 — Skinned mesh + skeleton ----------
+// 16-byte-aligned vertex with 4 joint influences per vertex. The vertex
+// shader does the weighted joint blend; no compute pre-skin in v1.
+struct alignas(16) SkinnedVertex {
+    float         position[3];  // 12
+    float         _pad0;        // 4
+    float         normal[3];    // 12
+    float         _pad1;        // 4
+    float         weights[4];   // 16
+    std::uint32_t joints[4];    // 16
+};
+static_assert(sizeof(SkinnedVertex) == 64);
+
+constexpr std::uint32_t kSkinnedTubeBones = 6;
+
+struct SkinnedMeshCpu {
+    std::vector<SkinnedVertex>  vertices;
+    std::vector<std::uint32_t>  indices;
+};
+
+// Procedural tube along +Y from (0,0,0) to (0,height,0), N radial segments.
+// Bones are spaced uniformly along Y; each vertex blends the two nearest
+// bones based on its Y position.
+[[nodiscard]] inline SkinnedMeshCpu make_skinned_tube(std::uint32_t radial_segments,
+                                                      std::uint32_t length_segments,
+                                                      float          height,
+                                                      float          radius) {
+    SkinnedMeshCpu m;
+    m.vertices.reserve((length_segments + 1u) * radial_segments);
+    m.indices.reserve(length_segments * radial_segments * 6u);
+
+    const float two_pi    = 6.28318530718f;
+    const float bone_span = height / static_cast<float>(kSkinnedTubeBones - 1u);
+
+    for (std::uint32_t iy = 0; iy <= length_segments; ++iy) {
+        const float t = static_cast<float>(iy) / static_cast<float>(length_segments);
+        const float y = t * height;
+        // Continuous bone coordinate (0 → kBones-1); split into floor + frac.
+        const float bf  = (y / bone_span);
+        const auto  b0u = static_cast<std::uint32_t>(std::floor(bf));
+        const std::uint32_t b0 = b0u >= (kSkinnedTubeBones - 1u)
+                                ? kSkinnedTubeBones - 2u : b0u;
+        const std::uint32_t b1 = b0 + 1u;
+        const float w1 = std::clamp(bf - static_cast<float>(b0), 0.0f, 1.0f);
+        const float w0 = 1.0f - w1;
+
+        for (std::uint32_t ix = 0; ix < radial_segments; ++ix) {
+            const float u  = static_cast<float>(ix) / static_cast<float>(radial_segments);
+            const float a  = u * two_pi;
+            const float cx = std::cos(a) * radius;
+            const float cz = std::sin(a) * radius;
+            SkinnedVertex v{};
+            v.position[0] = cx; v.position[1] = y; v.position[2] = cz;
+            v.normal[0]   = std::cos(a);
+            v.normal[1]   = 0.0f;
+            v.normal[2]   = std::sin(a);
+            v.weights[0]  = w0; v.weights[1] = w1;
+            v.weights[2]  = 0.0f; v.weights[3] = 0.0f;
+            v.joints[0]   = b0; v.joints[1] = b1;
+            v.joints[2]   = 0u; v.joints[3]  = 0u;
+            m.vertices.push_back(v);
+        }
+    }
+
+    for (std::uint32_t iy = 0; iy < length_segments; ++iy) {
+        for (std::uint32_t ix = 0; ix < radial_segments; ++ix) {
+            const std::uint32_t i0 = iy       * radial_segments + ix;
+            const std::uint32_t i1 = iy       * radial_segments + ((ix + 1u) % radial_segments);
+            const std::uint32_t i2 = (iy + 1u) * radial_segments + ix;
+            const std::uint32_t i3 = (iy + 1u) * radial_segments + ((ix + 1u) % radial_segments);
+            m.indices.push_back(i0); m.indices.push_back(i2); m.indices.push_back(i1);
+            m.indices.push_back(i1); m.indices.push_back(i2); m.indices.push_back(i3);
+        }
+    }
+    return m;
+}
+
+// One MSL-aligned joint matrix per bone. Vertex shader indexes by joint id.
+struct alignas(16) JointBuffer {
+    mge::math::Mat4 joints[kSkinnedTubeBones];
+};
+
+// Solve the bone chain: each bone has a local rotation + translation relative
+// to its parent. Bone 0 is the root (no parent). For our tube the chain runs
+// along +Y, so each non-root bone is placed `bone_span` above its parent.
+inline void solve_bone_chain(float time, float bone_span, JointBuffer& out) {
+    using namespace mge::math;
+    Mat4 parent_world = Mat4::identity();
+    for (std::uint32_t i = 0; i < kSkinnedTubeBones; ++i) {
+        const float phase   = static_cast<float>(i) * 0.55f;
+        const float wiggle  = std::sin(time * 2.5f + phase) * 0.32f;
+        const Mat4  local_R = rotation_x(wiggle);
+        Mat4 local;
+        if (i == 0u) {
+            local = local_R;                        // root rotation only
+        } else {
+            local = translation(Vec3{0.0f, bone_span, 0.0f}) * local_R;
+        }
+        const Mat4 world = parent_world * local;
+        // The bind pose places bone i at y = i * bone_span with identity
+        // rotation. inverse_bind = translation(0, -i*span, 0).
+        const Mat4 inv_bind = translation(Vec3{0.0f,
+                                                -static_cast<float>(i) * bone_span,
+                                                0.0f});
+        out.joints[i] = world * inv_bind;
+        parent_world = world;
+    }
+}
+
 struct Args {
     int           frames     = 0;
     bool          headless   = false;
@@ -311,6 +420,75 @@ constexpr const char* k_gbuffer_msl = R"(
         o.c0 = float4(inst.albedo_ao.rgb, inst.albedo_ao.a);
         float2 n = octa_encode(normalize(in.normal_ws));
         o.c1 = float4(n.x, n.y, inst.mr.g, inst.mr.r);
+        return o;
+    }
+)";
+
+// ---------- M16 — Skinned gbuffer vertex shader ----------
+//
+// Same gbuffer output as the rigid path (fragment shader from k_gbuffer_msl
+// is reused). The vertex shader skins 4 joint influences per vertex from a
+// JointBuffer bound at slot 3.
+constexpr const char* k_skinned_gbuffer_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct SkinnedVertex {
+        packed_float3 position; float _p0;
+        packed_float3 normal;   float _p1;
+        float4        weights;
+        uint4         joints;
+    };
+    struct InstanceData {
+        float4x4 model;
+        float4x4 model_inv_t;
+        float4   albedo_ao;
+        float4   mr;
+    };
+    struct FrameConstants {
+        float4x4 view_proj;
+        float4x4 light_view_proj;
+    };
+    constant constexpr int kBones = 6;
+    struct JointBuffer { float4x4 joints[kBones]; };
+
+    struct VSOut {
+        float4 position [[position]];
+        float3 normal_ws;
+        uint   iid [[flat]];
+    };
+
+    vertex VSOut skinned_gbuffer_vs(uint vid [[vertex_id]],
+                                      uint iid [[instance_id]],
+                                      device const SkinnedVertex* verts    [[buffer(0)]],
+                                      device const InstanceData*  instances [[buffer(1)]],
+                                      device const FrameConstants& fc       [[buffer(2)]],
+                                      device const JointBuffer&    jb       [[buffer(3)]]) {
+        SkinnedVertex v = verts[vid];
+        float4 lp = float4(v.position, 1.0);
+        float4 ln = float4(v.normal,   0.0);
+        float4 skinned_p = float4(0);
+        float4 skinned_n = float4(0);
+        for (int i = 0; i < 4; ++i) {
+            float w = v.weights[i];
+            if (w > 0.0) {
+                float4x4 J = jb.joints[v.joints[i]];
+                skinned_p += (J * lp) * w;
+                skinned_n += (J * ln) * w;
+            }
+        }
+        const InstanceData inst = instances[iid];
+        float4 ws_pos = inst.model * float4(skinned_p.xyz, 1.0);
+        // For skinning we already applied the joint rotation; just rotate the
+        // result by the model matrix's rotation. inst.model_inv_t is the right
+        // transform for normals from the instance, but joint rotation is
+        // already orthonormal so we can reuse the same normal transform.
+        float3 ws_n = (inst.model_inv_t * float4(skinned_n.xyz, 0.0)).xyz;
+
+        VSOut o;
+        o.position  = fc.view_proj * ws_pos;
+        o.normal_ws = normalize(ws_n);
+        o.iid       = iid;
         return o;
     }
 )";
@@ -1189,6 +1367,16 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_ground;
     std::unique_ptr<mge::rhi::AccelerationStructure> tlas;
 
+    // M16 — Skinned mesh
+    std::unique_ptr<mge::rhi::Shader>          skinned_gbuffer_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline>  skinned_gbuffer_pso;
+    std::unique_ptr<mge::rhi::Buffer>          tube_vbuf;
+    std::unique_ptr<mge::rhi::Buffer>          tube_ibuf;
+    std::uint32_t                              tube_index_count = 0;
+    std::unique_ptr<mge::rhi::Buffer>          tube_joint_buf;
+    float                                      tube_bone_span   = 0.0f;
+    float                                      tube_height      = 0.0f;
+
     // M14 — HZB occlusion culling
     std::unique_ptr<mge::rhi::Shader>           hzb_build_shader;
     std::unique_ptr<mge::rhi::ComputePipeline>  hzb_build_pso;
@@ -1231,12 +1419,15 @@ struct DeferredRenderer {
             r->device->create_shader_from_msl({k_hzb_build_msl,        "hzb.build"});
         r->hzb_stats_shader        =
             r->device->create_shader_from_msl({k_hzb_stats_msl,        "hzb.stats"});
+        r->skinned_gbuffer_shader  =
+            r->device->create_shader_from_msl({k_skinned_gbuffer_msl,  "skinned.gbuffer"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
             !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
             !r->overlay_shader || !r->particle_compute_shader ||
             !r->particle_render_shader || !r->lighting_rt_shader ||
-            !r->hzb_build_shader || !r->hzb_stats_shader) {
+            !r->hzb_build_shader || !r->hzb_stats_shader ||
+            !r->skinned_gbuffer_shader) {
             return nullptr;
         }
 
@@ -1294,6 +1485,30 @@ struct DeferredRenderer {
         r->cube_ibuf = upload(cube.indices.data(),
                                cube.indices.size() * sizeof(std::uint32_t),
                                BufferUsage::Index, "cube.ibuf");
+
+        // Skinned tube: 16 radial × 24 length segments, 2m tall, 0.18m radius.
+        {
+            constexpr std::uint32_t kRadial = 16;
+            constexpr std::uint32_t kLength = 24;
+            constexpr float          kHeight = 2.0f;
+            constexpr float          kRadius = 0.18f;
+            r->tube_height    = kHeight;
+            r->tube_bone_span = kHeight / static_cast<float>(kSkinnedTubeBones - 1u);
+            const auto tube = make_skinned_tube(kRadial, kLength, kHeight, kRadius);
+            r->tube_index_count = static_cast<std::uint32_t>(tube.indices.size());
+            r->tube_vbuf = upload(tube.vertices.data(),
+                                   tube.vertices.size() * sizeof(SkinnedVertex),
+                                   BufferUsage::Vertex, "tube.vbuf");
+            r->tube_ibuf = upload(tube.indices.data(),
+                                   tube.indices.size() * sizeof(std::uint32_t),
+                                   BufferUsage::Index,  "tube.ibuf");
+            BufferDesc jb;
+            jb.size    = sizeof(JointBuffer);
+            jb.usage   = BufferUsage::Uniform;
+            jb.storage = StorageMode::Shared;
+            jb.label   = "tube.joints";
+            r->tube_joint_buf = r->device->create_buffer(jb);
+        }
 
         BufferDesc ib;
         ib.size    = sizeof(InstanceData) * instance_cap;
@@ -1519,6 +1734,28 @@ struct DeferredRenderer {
             r->gbuffer_pso             = r->device->create_render_pipeline(pd);
         }
 
+        // M16 — skinned gbuffer PSO. No vertex descriptor: the vertex shader
+        // reads from a structured SkinnedVertex buffer via vid. Reuses the
+        // rigid gbuffer fragment shader since the output is identical.
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader   = r->skinned_gbuffer_shader.get();
+            pd.fragment_shader = r->gbuffer_shader.get();
+            pd.vertex_entry    = "skinned_gbuffer_vs";
+            pd.fragment_entry  = "gbuffer_fs";
+            pd.topology        = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format = PixelFormat::RGBA8Unorm;
+            pd.color_targets[1].format = PixelFormat::RGBA16Float;
+            pd.num_color_targets       = 2;
+            pd.depth.format            = PixelFormat::Depth32Float;
+            pd.depth.write_enabled     = true;
+            pd.depth.compare           = DepthCompare::Less;
+            pd.rasterizer.cull_mode    = CullMode::Back;
+            pd.rasterizer.front_face   = FrontFace::CounterClockwise;
+            pd.label                   = "skinned.gbuffer.pso";
+            r->skinned_gbuffer_pso     = r->device->create_render_pipeline(pd);
+        }
+
         {
             RenderPipelineDesc pd;
             pd.vertex_shader           = r->lighting_shader.get();
@@ -1690,7 +1927,9 @@ struct DeferredRenderer {
         if (!r->shadow_pso || !r->gbuffer_pso || !r->lighting_pso || !r->tonemap_pso ||
             !r->bright_pso || !r->downsample_pso || !r->upsample_pso || !r->overlay_pso ||
             !r->particle_step_pso || !r->particle_render_pso ||
-            !r->hzb_build_pso || !r->hzb_stats_pso) {
+            !r->hzb_build_pso || !r->hzb_stats_pso ||
+            !r->skinned_gbuffer_pso || !r->tube_vbuf || !r->tube_ibuf ||
+            !r->tube_joint_buf) {
             return nullptr;
         }
 
@@ -1963,9 +2202,8 @@ int run_windowed(const Args& a) {
         // M13: spheres are static so the rendered scene matches the static
         // TLAS. The previous M11 wobble around the world origin would have
         // de-synced RT shadows from the rasterized sphere positions.
-        // `alpha` and `sim_yaw` are kept (sim still ticks, just not visualized
-        // on the spheres).
-        (void)alpha;
+        // `alpha` is used by the M16 skinned-tube animation for smooth motion
+        // between sim ticks.
         (void)sim_yaw;
 
         // ---- LOD selection (CPU, distance-based) ----
@@ -2002,7 +2240,9 @@ int run_windowed(const Args& a) {
 
         // ---- Profile: instance buffer fill (CPU work) ----
         InstanceData* instances = static_cast<InstanceData*>(r->instance_buf->contents());
-        const std::uint32_t cube_base = static_cast<std::uint32_t>(k_spheres.size() + 1);
+        // Instance layout: [spheres × N, ground, tube, cubes...]
+        const std::uint32_t tube_slot = static_cast<std::uint32_t>(k_spheres.size() + 1u);
+        const std::uint32_t cube_base = tube_slot + 1u;
         {
             MGE_PROFILE_ZONE("fill_instances");
         // Spheres at [0..5), packed in LOD-grouped order.
@@ -2033,6 +2273,20 @@ int run_windowed(const Args& a) {
             inst.mr[0]           = 0.0f;  inst.mr[1] = 0.85f;
             inst.mr[2]           = 0.0f;  inst.mr[3] = 0.0f;
             instances[k_spheres.size()] = inst;
+        }
+        // Tube (skinned) at [tube_slot]: stand in front of the camera, slightly
+        // to the right of the sphere row.
+        {
+            InstanceData inst{};
+            const mge::math::Mat4 m =
+                mge::math::translation(mge::math::Vec3{0.0f, 0.0f, 3.6f});
+            inst.model        = m;
+            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(m));
+            inst.albedo_ao[0] = 0.18f; inst.albedo_ao[1] = 0.55f;
+            inst.albedo_ao[2] = 0.70f; inst.albedo_ao[3] = 1.0f;
+            inst.mr[0]        = 0.0f;  inst.mr[1] = 0.35f;
+            inst.mr[2]        = 0.0f;  inst.mr[3] = 0.0f;
+            instances[tube_slot] = inst;
         }
 
         // Frustum-cull the cube field against the camera.
@@ -2069,6 +2323,19 @@ int run_windowed(const Args& a) {
 
         cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
         }  // end of fill_instances profile zone
+
+        // M16 — bone animation. Solve the chain on CPU each frame; upload one
+        // JointBuffer to GPU; the skinned vertex shader blends 4 joint
+        // influences per vertex. Wall-clock time so it stays smooth at any
+        // render rate; pause+time_scale handled by reusing sim_time.
+        {
+            MGE_PROFILE_ZONE("skin_anim");
+            JointBuffer jb{};
+            const float t = static_cast<float>(loop.sim_time())
+                            + alpha * loop.fixed_dt();
+            solve_bone_chain(t, r->tube_bone_span, jb);
+            std::memcpy(r->tube_joint_buf->contents(), &jb, sizeof(jb));
+        }
 
         // ---- Particle sim + render uniforms ----
         // Wall-clock dt so the visual stays smooth at any render rate. Respects
@@ -2195,6 +2462,12 @@ int run_windowed(const Args& a) {
                           "LOD H%u M%u L%u  TRIS %u/%u",
                           sphere_lod_counts[0], sphere_lod_counts[1], sphere_lod_counts[2],
                           lod_tris, baseline_tris);
+            emit_text(glyphs, kPad, y, kScale, gray, buf);
+            y += kLineH;
+
+            std::snprintf(buf, sizeof(buf), "SKIN BONES %u  VERTS %u",
+                          static_cast<unsigned>(kSkinnedTubeBones),
+                          r->tube_index_count / 3u);
             emit_text(glyphs, kPad, y, kScale, gray, buf);
             y += kLineH;
 
@@ -2328,6 +2601,18 @@ int run_windowed(const Args& a) {
                     enc.set_fragment_buffer(*r->instance_buf, 0, off);
                     enc.draw_indexed(r->cube_index_count, IndexType::UInt32,
                                       *r->cube_ibuf, 0, cube_visible_count);
+                }
+
+                // M16 — skinned tube: separate PSO, joint buffer at slot 3.
+                {
+                    const std::size_t off = tube_slot * sizeof(InstanceData);
+                    enc.set_pipeline(*r->skinned_gbuffer_pso);
+                    enc.set_vertex_buffer(*r->tube_vbuf, 0);
+                    enc.set_vertex_buffer(*r->instance_buf,   1, off);
+                    enc.set_vertex_buffer(*r->tube_joint_buf, 3);
+                    enc.set_fragment_buffer(*r->instance_buf, 0, off);
+                    enc.draw_indexed(r->tube_index_count, IndexType::UInt32,
+                                      *r->tube_ibuf, 0, 1);
                 }
             });
 

@@ -289,6 +289,14 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P1-SKIN-RT-001] Skinned tube is invisible to RT shadows + reflections
+- **What**: M16's skinned tube renders through the deferred path but isn't in the TLAS. It gets no ray-traced shadow on the ground and isn't reflected by metallic spheres. CSM also doesn't include it (no entry in the shadow pass).
+- **Why now**: TLAS is static (P1-RT-STATIC-TLAS-001). Adding skinned geometry requires per-frame TLAS refit so the BVH tracks the deformation.
+- **Cost if left**: Visual disconnect — tube looks "floaty" because it has no shadow on the ground.
+- **Fix path**: Lands together with dynamic TLAS support: every frame, run the same skinning math on CPU (or via the M17 compute) into a "shadow proxy" vertex buffer, rebuild the tube's BLAS, refit the TLAS instance. Or use compute skinning's output buffer directly.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
 ### [P1-LOD-DISTANCE-001] LOD selection uses raw distance, not projected size
 - **What**: `sphere_lod[i]` is picked from `length(camera - sphere)` against fixed thresholds (9 m, 18 m). Doesn't account for FOV / zoom: a 30°-FOV camera at 20 m sees a sphere bigger than a 90°-FOV camera at 10 m, but the LOD pick is identical.
 - **Why now**: All-distance heuristic works for the static demo camera. Projected screen-space size is the correct metric but pulls in projection matrix math at LOD-select time.

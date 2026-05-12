@@ -160,7 +160,17 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
   - [—] **Per-LOD BLAS for RT** (M15.b) — needs TLAS refit / rebuild plumbing first (P1-RT-STATIC-TLAS-001).
   - [—] **Screen-projected size selection** — current heuristic is raw distance; projected radius would handle FOV/zoom correctly. Trivial follow-up.
   - [—] **LOD dithering / temporal blend** — Phase 2 polish.
-- [ ] M16 — Skeletal animation (mesh skinning + animation graph)
+- [x] **M16 — Skeletal animation (vertex-shader skinning, procedural data)**
+  - [x] **`SkinnedVertex` (64 B, aligned 16)** — pos + normal + 4 weights + 4 joint indices per vertex.
+  - [x] **`make_skinned_tube`** — procedural cylinder along +Y, 6 bones spaced uniformly along the spine, per-vertex weights blend the two nearest bones.
+  - [x] **`solve_bone_chain`** — walks the bone chain root→tip applying a per-bone `rotation_x` driven by `sin(t * 2.5 + bone_idx * 0.55) * 0.32`. Emits joint matrices = `world_pose × inverse_bind`. Linear-blend skinning compatible with glTF conventions.
+  - [x] **`k_skinned_gbuffer_msl`** — skinning vertex shader: 4 weight blends per vertex against a `JointBuffer` at slot 3. Reuses the rigid `gbuffer_fs` fragment shader.
+  - [x] **Instance layout** — tube lives at `tube_slot = k_spheres.size() + 1`; cubes shift to `cube_base = tube_slot + 1`.
+  - [x] **HUD readout** — `SKIN BONES N  VERTS X`.
+  - [—] **CPU vs compute skinning** — vertex-shader skinning is the M16 baseline. **M17 will move to compute** so shadow + gbuffer + RT can share the deformed mesh.
+  - [—] **RT visibility for skinned mesh** — tube isn't in the TLAS; shares the deferral with P1-RT-STATIC-TLAS-001 (P1-SKIN-RT-001).
+  - [—] **glTF animation import** — Phase 2 asset pipeline.
+- [ ] M17 — Skinning compute shader [unblocked by M12]
 - [ ] M17 — Skinning compute shader [unblocked by M12]
 
 ## Phase 2 — Systems
