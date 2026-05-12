@@ -2071,7 +2071,7 @@ int run_headless(std::size_t instance_cap) {
     return 0;
 }
 
-int run_windowed(const Args& a) {
+int run_windowed(Args a) {
     using namespace mge::platform;
     using namespace mge::rhi;
     using mge::frame_graph::FrameGraph;
@@ -2123,8 +2123,12 @@ int run_windowed(const Args& a) {
 
     // M18: optional ImGui-driven editor chrome. Lives in its own FG pass that
     // runs after `overlay`, before present, on the same backbuffer.
+    // The on-screen M11 overlay is redundant with the editor's profiler /
+    // status bar — turn it off automatically so it doesn't render under the
+    // editor panels and read as truncated text.
     std::unique_ptr<mge::editor::Editor> editor;
     if (a.editor) {
+        a.no_overlay = true;
         // DPI scale = physical / logical. 2.0 on Retina; 1.0 on a 1× display.
         const std::uint32_t logical_w = window.width();
         const std::uint32_t drawable_w = window.drawable_width();

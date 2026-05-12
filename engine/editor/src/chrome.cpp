@@ -130,7 +130,7 @@ void draw_menubar() {
     meta_kv("build", "Release · arm64");
     meta_kv("gpu",   "M-series");
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::ok));
-    ImGui::TextUnformatted("● connected");
+    ImGui::TextUnformatted("* connected");  // M19 swaps for the proper bullet
     ImGui::PopStyleColor();
 
     end_chrome_bar(tokens::bd_1);
@@ -174,10 +174,11 @@ void draw_toolbar(const EngineState& state) {
     std::snprintf(buf, sizeof(buf), "%.2fs", state.sim_time);
     readout("sim",   buf);
 
-    // Right-aligned ⌘K hint, like the design's "Run command" pill.
+    // Right-aligned "Run command" hint pill. M19 swaps the ASCII Cmd+K hint
+    // for the proper ⌘K glyph once a TTF font with extended unicode loads.
     const float right_w = s(200.0f);
     ImGui::SameLine(ImGui::GetWindowWidth() - right_w);
-    readout("⌘K", "Run command", tokens::fg_4);
+    readout("Cmd+K", "Run command", tokens::fg_4);
 
     end_chrome_bar(tokens::bd_1);
 }
@@ -223,7 +224,7 @@ void draw_statusbar(const EngineState& state) {
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, s(tokens::sp_5));
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::ok));
-    ImGui::TextUnformatted("● live");
+    ImGui::TextUnformatted("* live");  // M19 swaps for the proper bullet
     ImGui::PopStyleColor();
 
     end_chrome_bar(tokens::bd_1);
