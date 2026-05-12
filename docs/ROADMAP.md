@@ -87,13 +87,14 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [x] **Demo: NxN cube field with CPU frustum cull** — 1024 default (32x32), scales to 160k+ via `--cubes N` arg. Per-frame: rebuild AABBs, cull, pack visible instances, single `draw_indexed` per mesh with `instance_count = visible_count`.
   - [x] **Perf**: 50k cubes (224x224 grid), ~11k visible after cull → **120 FPS locked** (8.33ms) on M1 Pro. 160k cubes (400x400), ~15k visible → **still 120 FPS locked**. Meta exceeded.
   - [—] **`MTLIndirectCommandBuffer`** (GPU-driven) — deferred. Direct `instance_count` argument hits the perf target; ICB pays off only with thousands of distinct draw calls.
-- [ ] **M9 — Post FX chain**
-  - [ ] HDR pipeline
-  - [ ] Auto-exposure (compute histogram)
-  - [ ] Bloom (down/up pyramid)
-  - [ ] Motion vectors integrated in GBuffer
-  - [ ] TAA with neighborhood clamp
-  - [ ] ACES tonemap
+- [x] **M9 — Post FX chain (v1)**
+  - [x] **RHI blend state** — `BlendFactor`/`BlendOp` enums + extended `ColorTargetState` (src/dst factors + op for RGB and alpha). Metal backend wires `setSourceRGBBlendFactor` etc.
+  - [x] **Bloom** — 5-mip down/up pyramid: bright pass (Karis 2014 soft-threshold knee) → 4× 4-tap bilinear downsample → 4× 9-tap tent upsample with **additive blend** (`src=One, dst=One, op=Add`) and `LoadAction::Load` on the destination.
+  - [x] **ACES tonemap** (Stephen Hill's "ACES Fitted") replaces Reinhard. Combines HDR with the upsampled bloom pyramid's top mip in the tonemap pass.
+  - [x] HDR pipeline (carried from M6) — RGBA16Float intermediates throughout, ACES at the final present.
+  - [x] **FrameGraph fix**: `topological_sort` now walks in declaration order and chains write-after-write edges, correctly ordering multi-write resources (bloom mips are written by both downsample and upsample).
+  - [—] **Auto-exposure** — deferred to M9.b (needs either compute pipeline support or a mip-reduce fragment chain).
+  - [—] **Motion vectors + TAA** — deferred to M9.b (needs previous-frame matrices, history texture, jittered projection, neighborhood clamp). Bigger than a single milestone slice.
 - [ ] **M10 — Game loop**
   - [ ] Fixed timestep accumulator
   - [ ] Decoupled render with interpolation

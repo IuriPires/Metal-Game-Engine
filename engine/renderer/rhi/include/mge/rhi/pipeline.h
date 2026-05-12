@@ -30,7 +30,12 @@ struct VertexLayout {
 struct ColorTargetState {
     PixelFormat format    = PixelFormat::BGRA8UnormSrgb;
     bool        blend     = false;
-    // Blend factors / op intentionally omitted for M3; add when transparency lands (M9).
+    BlendFactor src_color = BlendFactor::One;
+    BlendFactor dst_color = BlendFactor::Zero;
+    BlendOp     color_op  = BlendOp::Add;
+    BlendFactor src_alpha = BlendFactor::One;
+    BlendFactor dst_alpha = BlendFactor::Zero;
+    BlendOp     alpha_op  = BlendOp::Add;
 };
 
 struct DepthState {

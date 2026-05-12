@@ -192,10 +192,19 @@ std::unique_ptr<RenderPipeline> Device::create_render_pipeline(const RenderPipel
     }
 
     for (std::uint32_t i = 0; i < desc.num_color_targets; ++i) {
+        const auto& ct = desc.color_targets[i];
         MTL::RenderPipelineColorAttachmentDescriptor* ca =
             pd->colorAttachments()->object(i);
-        ca->setPixelFormat(mb::to_mtl(desc.color_targets[i].format));
-        ca->setBlendingEnabled(desc.color_targets[i].blend);
+        ca->setPixelFormat(mb::to_mtl(ct.format));
+        ca->setBlendingEnabled(ct.blend);
+        if (ct.blend) {
+            ca->setSourceRGBBlendFactor(mb::to_mtl(ct.src_color));
+            ca->setDestinationRGBBlendFactor(mb::to_mtl(ct.dst_color));
+            ca->setRgbBlendOperation(mb::to_mtl(ct.color_op));
+            ca->setSourceAlphaBlendFactor(mb::to_mtl(ct.src_alpha));
+            ca->setDestinationAlphaBlendFactor(mb::to_mtl(ct.dst_alpha));
+            ca->setAlphaBlendOperation(mb::to_mtl(ct.alpha_op));
+        }
     }
     if (desc.depth.format != PixelFormat::Undefined) {
         pd->setDepthAttachmentPixelFormat(mb::to_mtl(desc.depth.format));

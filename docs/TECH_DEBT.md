@@ -100,6 +100,24 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/rhi
 - **Created**: 2026-05-12, downgraded 2026-05-12
 
+## New debt opened in M9
+
+### [P1-POSTFX-AUTOEXP-001] No auto-exposure
+- **What**: Sun intensity, ambient, and tonemap exposure are all hard-coded. Auto-exposure (luminance histogram + adaptation) is deferred.
+- **Why now**: Requires compute pipeline support in the RHI (or a mip-reduce fragment chain). M9 v1 scope was bloom + ACES.
+- **Cost if left**: Scenes can't gracefully transition between bright outdoor and dim indoor exposures.
+- **Fix path**: M9.b — add `ComputePipeline` to RHI; compute pass builds a 256-bin histogram of HDR luminance; second compute pass reduces to a single exposure value with EMA adaptation; tonemap multiplies HDR by exposure before ACES.
+- **Owner**: renderer/postfx
+- **Created**: 2026-05-12
+
+### [P1-POSTFX-TAA-001] No motion vectors, no TAA
+- **What**: G-Buffer has no motion vectors. No history texture, no temporal anti-aliasing. Aliasing visible on shadow edges and cube silhouettes.
+- **Why now**: TAA is a milestone-sized feature: previous-frame matrices, jittered projection, history reprojection, neighborhood clamp + YCoCg variance trick. Out of M9 v1 scope.
+- **Cost if left**: Spatial-only aliasing (no MSAA on deferred either). Bloom helps mask it but doesn't solve it.
+- **Fix path**: M9.b. Add a motion-vector channel to the GBuffer (or a dedicated RGBA16F MV target). Cache previous view-projection on the camera. Add a history HDR texture (imported resource per frame). TAA fragment in the lighting chain post-bloom.
+- **Owner**: renderer/postfx
+- **Created**: 2026-05-12
+
 ## New debt opened in M8
 
 ### [P1-CULL-NEON-001] Scalar cull loop in demo, NEON path unused

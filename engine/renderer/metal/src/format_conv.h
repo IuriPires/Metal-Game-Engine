@@ -157,6 +157,33 @@ namespace mge::rhi::metal_backend {
     return MTL::VertexFormatInvalid;
 }
 
+[[nodiscard]] inline MTL::BlendFactor to_mtl(BlendFactor f) noexcept {
+    switch (f) {
+        case BlendFactor::Zero:             return MTL::BlendFactorZero;
+        case BlendFactor::One:              return MTL::BlendFactorOne;
+        case BlendFactor::SrcColor:         return MTL::BlendFactorSourceColor;
+        case BlendFactor::OneMinusSrcColor: return MTL::BlendFactorOneMinusSourceColor;
+        case BlendFactor::SrcAlpha:         return MTL::BlendFactorSourceAlpha;
+        case BlendFactor::OneMinusSrcAlpha: return MTL::BlendFactorOneMinusSourceAlpha;
+        case BlendFactor::DstColor:         return MTL::BlendFactorDestinationColor;
+        case BlendFactor::OneMinusDstColor: return MTL::BlendFactorOneMinusDestinationColor;
+        case BlendFactor::DstAlpha:         return MTL::BlendFactorDestinationAlpha;
+        case BlendFactor::OneMinusDstAlpha: return MTL::BlendFactorOneMinusDestinationAlpha;
+    }
+    return MTL::BlendFactorOne;
+}
+
+[[nodiscard]] inline MTL::BlendOperation to_mtl(BlendOp op) noexcept {
+    switch (op) {
+        case BlendOp::Add:             return MTL::BlendOperationAdd;
+        case BlendOp::Subtract:        return MTL::BlendOperationSubtract;
+        case BlendOp::ReverseSubtract: return MTL::BlendOperationReverseSubtract;
+        case BlendOp::Min:             return MTL::BlendOperationMin;
+        case BlendOp::Max:             return MTL::BlendOperationMax;
+    }
+    return MTL::BlendOperationAdd;
+}
+
 [[nodiscard]] inline NS::String* ns_str(const std::string& s) noexcept {
     return NS::String::string(s.c_str(), NS::UTF8StringEncoding);
 }

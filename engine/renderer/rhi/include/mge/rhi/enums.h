@@ -133,6 +133,27 @@ enum class ShaderStage : std::uint8_t {
     Compute,
 };
 
+enum class BlendFactor : std::uint8_t {
+    Zero = 0,
+    One,
+    SrcColor,
+    OneMinusSrcColor,
+    SrcAlpha,
+    OneMinusSrcAlpha,
+    DstColor,
+    OneMinusDstColor,
+    DstAlpha,
+    OneMinusDstAlpha,
+};
+
+enum class BlendOp : std::uint8_t {
+    Add = 0,
+    Subtract,
+    ReverseSubtract,
+    Min,
+    Max,
+};
+
 [[nodiscard]] inline std::uint32_t bytes_of(VertexFormat f) noexcept {
     switch (f) {
         case VertexFormat::Float32:    return 4;

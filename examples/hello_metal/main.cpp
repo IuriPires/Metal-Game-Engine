@@ -1,6 +1,7 @@
-// M8 demo: deferred PBR + shadow + instancing + frustum culling.
+// M9 demo: deferred PBR + shadow + instancing + frustum culling + post-FX.
+// Post chain: bright extract -> 5-mip down/up bloom pyramid -> ACES tonemap.
 //
-// Scene now has three groups of instances on a 4-pass FrameGraph:
+// Scene now has three groups of instances on a 13-pass FrameGraph:
 //   - 5 spheres (PBR material spectrum, instanced draw)
 //   - 1 ground plane (instanced draw of count 1)
 //   - NxN grid of small cubes around the spheres, CPU-side frustum-culled
@@ -306,6 +307,101 @@ constexpr const char* k_lighting_msl = R"(
     }
 )";
 
+constexpr const char* k_bright_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct VSOut { float4 position [[position]]; float2 uv; };
+
+    vertex VSOut fullscreen_vs(uint vid [[vertex_id]]) {
+        float2 uv = float2((vid << 1) & 2, vid & 2);
+        VSOut o;
+        o.position = float4(uv * 2.0 - 1.0, 0.0, 1.0);
+        o.uv       = float2(uv.x, 1.0 - uv.y);
+        return o;
+    }
+
+    // Soft-thresholded bright pass per Karis 2014. Pixels above `threshold` keep
+    // their HDR colour, pixels just below get a quadratic ramp ("knee").
+    fragment float4 bright_fs(VSOut in [[stage_in]],
+                               texture2d<float> hdr [[texture(0)]],
+                               sampler          s   [[sampler(0)]]) {
+        float3 c = hdr.sample(s, in.uv).rgb;
+        const float threshold = 1.0;
+        const float knee      = 0.5;
+        float brightness = max(c.r, max(c.g, c.b));
+        float soft = max(0.0, brightness - threshold + knee);
+        soft = soft * soft / (4.0 * knee + 1e-5);
+        float contribution = max(soft, brightness - threshold) / max(brightness, 1e-5);
+        return float4(c * contribution, 1.0);
+    }
+)";
+
+constexpr const char* k_downsample_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct VSOut { float4 position [[position]]; float2 uv; };
+
+    vertex VSOut fullscreen_vs(uint vid [[vertex_id]]) {
+        float2 uv = float2((vid << 1) & 2, vid & 2);
+        VSOut o;
+        o.position = float4(uv * 2.0 - 1.0, 0.0, 1.0);
+        o.uv       = float2(uv.x, 1.0 - uv.y);
+        return o;
+    }
+
+    // 4-tap bilinear box filter at +/- half-texel offsets - leverages HW
+    // bilinear so each sample averages 4 source texels.
+    fragment float4 downsample_fs(VSOut in [[stage_in]],
+                                   texture2d<float> src [[texture(0)]],
+                                   sampler          s   [[sampler(0)]]) {
+        float w = float(src.get_width());
+        float h = float(src.get_height());
+        float2 t = float2(1.0 / w, 1.0 / h);
+        float3 a = src.sample(s, in.uv + float2(-t.x, -t.y)).rgb;
+        float3 b = src.sample(s, in.uv + float2( t.x, -t.y)).rgb;
+        float3 c = src.sample(s, in.uv + float2(-t.x,  t.y)).rgb;
+        float3 d = src.sample(s, in.uv + float2( t.x,  t.y)).rgb;
+        return float4((a + b + c + d) * 0.25, 1.0);
+    }
+)";
+
+constexpr const char* k_upsample_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct VSOut { float4 position [[position]]; float2 uv; };
+
+    vertex VSOut fullscreen_vs(uint vid [[vertex_id]]) {
+        float2 uv = float2((vid << 1) & 2, vid & 2);
+        VSOut o;
+        o.position = float4(uv * 2.0 - 1.0, 0.0, 1.0);
+        o.uv       = float2(uv.x, 1.0 - uv.y);
+        return o;
+    }
+
+    // 9-tap tent filter for soft upsampling. Pipeline blends additively so the
+    // destination's existing contents are preserved.
+    fragment float4 upsample_fs(VSOut in [[stage_in]],
+                                  texture2d<float> low [[texture(0)]],
+                                  sampler          s   [[sampler(0)]]) {
+        float w = float(low.get_width());
+        float h = float(low.get_height());
+        float2 t = float2(1.0 / w, 1.0 / h);
+        float3 acc = low.sample(s, in.uv).rgb * 4.0;
+        acc += low.sample(s, in.uv + float2(-t.x, 0.0)).rgb * 2.0;
+        acc += low.sample(s, in.uv + float2( t.x, 0.0)).rgb * 2.0;
+        acc += low.sample(s, in.uv + float2(0.0, -t.y)).rgb * 2.0;
+        acc += low.sample(s, in.uv + float2(0.0,  t.y)).rgb * 2.0;
+        acc += low.sample(s, in.uv + float2(-t.x, -t.y)).rgb;
+        acc += low.sample(s, in.uv + float2( t.x, -t.y)).rgb;
+        acc += low.sample(s, in.uv + float2(-t.x,  t.y)).rgb;
+        acc += low.sample(s, in.uv + float2( t.x,  t.y)).rgb;
+        return float4(acc / 16.0, 1.0);
+    }
+)";
+
 constexpr const char* k_tonemap_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
@@ -320,12 +416,32 @@ constexpr const char* k_tonemap_msl = R"(
         return o;
     }
 
+    // ACES Fitted tonemap (Stephen Hill). Maps HDR linear -> display linear in [0,1].
+    float3 aces(float3 x) {
+        const float3x3 IN = float3x3(
+            0.59719, 0.07600, 0.02840,
+            0.35458, 0.90834, 0.13383,
+            0.04823, 0.01566, 0.83777);
+        const float3x3 OUT = float3x3(
+             1.60475, -0.10208, -0.00327,
+            -0.53108,  1.10813, -0.07276,
+            -0.07367, -0.00605,  1.07602);
+        x = IN * x;
+        float3 a = x * (x + 0.0245786) - 0.000090537;
+        float3 b = x * (0.983729 * x + 0.4329510) + 0.238081;
+        x = a / b;
+        x = OUT * x;
+        return saturate(x);
+    }
+
     fragment float4 tonemap_fs(VSOut in [[stage_in]],
-                                 texture2d<float> hdr [[texture(0)]],
-                                 sampler          s   [[sampler(0)]]) {
+                                 texture2d<float> hdr   [[texture(0)]],
+                                 texture2d<float> bloom [[texture(1)]],
+                                 sampler          s     [[sampler(0)]]) {
         float3 c = hdr.sample(s, in.uv).rgb;
-        c = c / (1.0 + c);
-        return float4(c, 1.0);
+        float3 b = bloom.sample(s, in.uv).rgb;
+        c += b * 0.04;  // bloom intensity (subtle)
+        return float4(aces(c), 1.0);
     }
 )";
 
@@ -412,6 +528,12 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::RenderPipeline> lighting_pso;
     std::unique_ptr<mge::rhi::Shader>         tonemap_shader;
     std::unique_ptr<mge::rhi::RenderPipeline> tonemap_pso;
+    std::unique_ptr<mge::rhi::Shader>         bright_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline> bright_pso;
+    std::unique_ptr<mge::rhi::Shader>         downsample_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline> downsample_pso;
+    std::unique_ptr<mge::rhi::Shader>         upsample_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline> upsample_pso;
 
     std::unique_ptr<mge::rhi::Buffer>  instance_buf;
     std::size_t                        instance_capacity = 0;
@@ -427,12 +549,18 @@ struct DeferredRenderer {
         r->device = Device::create();
         if (!r->device) return nullptr;
         r->queue           = r->device->create_queue("deferred.queue");
-        r->shadow_shader   = r->device->create_shader_from_msl({k_shadow_msl,   "shadow"});
-        r->gbuffer_shader  = r->device->create_shader_from_msl({k_gbuffer_msl,  "gbuffer"});
-        r->lighting_shader = r->device->create_shader_from_msl({k_lighting_msl, "lighting"});
-        r->tonemap_shader  = r->device->create_shader_from_msl({k_tonemap_msl,  "tonemap"});
+        r->shadow_shader     = r->device->create_shader_from_msl({k_shadow_msl,     "shadow"});
+        r->gbuffer_shader    = r->device->create_shader_from_msl({k_gbuffer_msl,    "gbuffer"});
+        r->lighting_shader   = r->device->create_shader_from_msl({k_lighting_msl,   "lighting"});
+        r->tonemap_shader    = r->device->create_shader_from_msl({k_tonemap_msl,    "tonemap"});
+        r->bright_shader     = r->device->create_shader_from_msl({k_bright_msl,     "bright"});
+        r->downsample_shader = r->device->create_shader_from_msl({k_downsample_msl, "downsample"});
+        r->upsample_shader   = r->device->create_shader_from_msl({k_upsample_msl,   "upsample"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
-            !r->lighting_shader || !r->tonemap_shader) return nullptr;
+            !r->lighting_shader || !r->tonemap_shader ||
+            !r->bright_shader || !r->downsample_shader || !r->upsample_shader) {
+            return nullptr;
+        }
 
         auto upload = [&](const void* data, std::size_t size, BufferUsage usage,
                           const char* label) {
@@ -587,7 +715,61 @@ struct DeferredRenderer {
             r->tonemap_pso             = r->device->create_render_pipeline(pd);
         }
 
-        if (!r->shadow_pso || !r->gbuffer_pso || !r->lighting_pso || !r->tonemap_pso) {
+        // Bright pass: read HDR, threshold, write bloom_mip0.
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader           = r->bright_shader.get();
+            pd.fragment_shader         = r->bright_shader.get();
+            pd.vertex_entry            = "fullscreen_vs";
+            pd.fragment_entry          = "bright_fs";
+            pd.topology                = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format = PixelFormat::RGBA16Float;
+            pd.num_color_targets       = 1;
+            pd.rasterizer.cull_mode    = CullMode::None;
+            pd.label                   = "bright.pso";
+            r->bright_pso              = r->device->create_render_pipeline(pd);
+        }
+
+        // Downsample pass: shared by all 4 mip steps (4-tap bilinear box).
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader           = r->downsample_shader.get();
+            pd.fragment_shader         = r->downsample_shader.get();
+            pd.vertex_entry            = "fullscreen_vs";
+            pd.fragment_entry          = "downsample_fs";
+            pd.topology                = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format = PixelFormat::RGBA16Float;
+            pd.num_color_targets       = 1;
+            pd.rasterizer.cull_mode    = CullMode::None;
+            pd.label                   = "downsample.pso";
+            r->downsample_pso          = r->device->create_render_pipeline(pd);
+        }
+
+        // Upsample pass: ADDITIVE blend (src=One, dst=One). Combines its output
+        // with the destination's existing higher-res mip via LoadAction::Load.
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader           = r->upsample_shader.get();
+            pd.fragment_shader         = r->upsample_shader.get();
+            pd.vertex_entry            = "fullscreen_vs";
+            pd.fragment_entry          = "upsample_fs";
+            pd.topology                = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format    = PixelFormat::RGBA16Float;
+            pd.color_targets[0].blend     = true;
+            pd.color_targets[0].src_color = BlendFactor::One;
+            pd.color_targets[0].dst_color = BlendFactor::One;
+            pd.color_targets[0].color_op  = BlendOp::Add;
+            pd.color_targets[0].src_alpha = BlendFactor::One;
+            pd.color_targets[0].dst_alpha = BlendFactor::One;
+            pd.color_targets[0].alpha_op  = BlendOp::Add;
+            pd.num_color_targets          = 1;
+            pd.rasterizer.cull_mode       = CullMode::None;
+            pd.label                      = "upsample.pso";
+            r->upsample_pso               = r->device->create_render_pipeline(pd);
+        }
+
+        if (!r->shadow_pso || !r->gbuffer_pso || !r->lighting_pso || !r->tonemap_pso ||
+            !r->bright_pso || !r->downsample_pso || !r->upsample_pso) {
             return nullptr;
         }
         return r;
@@ -886,16 +1068,89 @@ int run_windowed(const Args& a) {
                 enc.draw(3);
             });
 
-        fg.add_pass("tonemap",
+        // ---- Bloom (5-mip down/up pyramid, additive in upsample) ----
+        constexpr int kBloomMips = 5;
+        auto mip_dim = [&](int level) {
+            const std::uint32_t w = std::max(1u, fw >> (level + 1));
+            const std::uint32_t h = std::max(1u, fh >> (level + 1));
+            return std::pair<std::uint32_t, std::uint32_t>{w, h};
+        };
+
+        mge::frame_graph::TextureHandle bloom[kBloomMips];
+        for (int i = 0; i < kBloomMips; ++i) {
+            const auto [w, h] = mip_dim(i);
+            TransientTextureDesc bd{
+                w, h, 1, PixelFormat::RGBA16Float,
+                TextureUsage::RenderTarget | TextureUsage::ShaderRead, StorageMode::Private};
+            bloom[i] = fg.create_texture(bd, "bloom");
+        }
+
+        // Bright pass: HDR -> bloom[0].
+        fg.add_pass("bloom.bright",
             [&](PassBuilder& pb) {
                 pb.read(hdr, mge::frame_graph::ResourceUsage::ShaderRead);
+                pb.write_color(bloom[0], LoadAction::Clear, 0, 0, 0, 1);
+            },
+            [&](RenderContext& ctx) {
+                auto rp = ctx.make_render_pass_desc();
+                RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
+                enc.set_pipeline(*r->bright_pso);
+                enc.set_fragment_texture(ctx.texture(hdr), 0);
+                enc.set_fragment_sampler(*r->linear_clamp, 0);
+                enc.draw(3);
+            });
+
+        // Downsample chain: bloom[i] -> bloom[i+1].
+        for (int i = 0; i + 1 < kBloomMips; ++i) {
+            const auto src = bloom[i];
+            const auto dst = bloom[i + 1];
+            fg.add_pass("bloom.ds",
+                [&, src, dst](PassBuilder& pb) {
+                    pb.read(src, mge::frame_graph::ResourceUsage::ShaderRead);
+                    pb.write_color(dst, LoadAction::Clear, 0, 0, 0, 1);
+                },
+                [&, src](RenderContext& ctx) {
+                    auto rp = ctx.make_render_pass_desc();
+                    RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
+                    enc.set_pipeline(*r->downsample_pso);
+                    enc.set_fragment_texture(ctx.texture(src), 0);
+                    enc.set_fragment_sampler(*r->linear_clamp, 0);
+                    enc.draw(3);
+                });
+        }
+
+        // Upsample chain: bloom[i+1] -> bloom[i] with additive blend (LoadAction::Load).
+        for (int i = kBloomMips - 2; i >= 0; --i) {
+            const auto src = bloom[i + 1];
+            const auto dst = bloom[i];
+            fg.add_pass("bloom.us",
+                [&, src, dst](PassBuilder& pb) {
+                    pb.read(src, mge::frame_graph::ResourceUsage::ShaderRead);
+                    pb.write_color(dst, LoadAction::Load, 0, 0, 0, 1);
+                },
+                [&, src](RenderContext& ctx) {
+                    auto rp = ctx.make_render_pass_desc();
+                    RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
+                    enc.set_pipeline(*r->upsample_pso);
+                    enc.set_fragment_texture(ctx.texture(src), 0);
+                    enc.set_fragment_sampler(*r->linear_clamp, 0);
+                    enc.draw(3);
+                });
+        }
+
+        // Tonemap: HDR + bloom[0] -> backbuffer with ACES.
+        fg.add_pass("tonemap",
+            [&](PassBuilder& pb) {
+                pb.read(hdr,      mge::frame_graph::ResourceUsage::ShaderRead);
+                pb.read(bloom[0], mge::frame_graph::ResourceUsage::ShaderRead);
                 pb.write_color(bb, LoadAction::Clear, 0, 0, 0, 1);
             },
             [&](RenderContext& ctx) {
                 auto rp = ctx.make_render_pass_desc();
                 RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
                 enc.set_pipeline(*r->tonemap_pso);
-                enc.set_fragment_texture(ctx.texture(hdr), 0);
+                enc.set_fragment_texture(ctx.texture(hdr),      0);
+                enc.set_fragment_texture(ctx.texture(bloom[0]), 1);
                 enc.set_fragment_sampler(*r->linear_clamp, 0);
                 enc.draw(3);
             });

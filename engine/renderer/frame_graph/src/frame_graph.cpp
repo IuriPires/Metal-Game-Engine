@@ -163,29 +163,37 @@ bool FrameGraph::topological_sort() {
         return true;
     }
 
-    // For each resource, the producer pass is the pass that writes it. If a
-    // resource has multiple writers we take the last as the producer (the
-    // graph then makes ordering between writers undefined; consumers force
-    // ordering). v1 keeps things simple - we use "last writer".
-    std::unordered_map<std::uint32_t, std::uint32_t> last_writer;
-    for (std::uint32_t i = 0; i < passes_.size(); ++i) {
-        for (const auto& w : passes_[i].writes) {
-            last_writer[w.handle.id] = i;
-        }
-    }
-
-    // Build adjacency: producer -> consumer.
+    // Walk passes in declaration order. For each read R, the producer is the
+    // MOST RECENT writer up to (but not including) this pass — captures the
+    // "use what was written just before me" intent and avoids cycles when the
+    // same resource is rewritten later (e.g. bloom mips read by downsample
+    // then re-written by upsample).
+    //
+    // For writes, we also chain write-after-write into an ordering edge so
+    // overlapping writers stay in declaration order.
     const std::size_t              n = passes_.size();
     std::vector<std::vector<std::uint32_t>> adj(n);
     std::vector<std::uint32_t>     indeg(n, 0);
 
+    auto add_edge = [&](std::uint32_t from, std::uint32_t to) {
+        adj[from].push_back(to);
+        ++indeg[to];
+    };
+
+    std::unordered_map<std::uint32_t, std::uint32_t> current_writer;
     for (std::uint32_t i = 0; i < n; ++i) {
         for (const auto& r : passes_[i].reads) {
-            auto it = last_writer.find(r.handle.id);
-            if (it != last_writer.end() && it->second != i) {
-                adj[it->second].push_back(i);
-                ++indeg[i];
+            auto it = current_writer.find(r.handle.id);
+            if (it != current_writer.end() && it->second != i) {
+                add_edge(it->second, i);
             }
+        }
+        for (const auto& w : passes_[i].writes) {
+            auto it = current_writer.find(w.handle.id);
+            if (it != current_writer.end() && it->second != i) {
+                add_edge(it->second, i);  // WAW: serialize writers
+            }
+            current_writer[w.handle.id] = i;
         }
     }
 
