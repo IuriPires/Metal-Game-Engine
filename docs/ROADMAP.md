@@ -28,12 +28,14 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [x] 30 unit tests (math invariants, NEON↔scalar parity, allocator correctness, logger filtering, Result)
   - [x] fmt 10.2.1 wired
   - [—] Config (deferred — needed first at M4 when assets land)
-- [ ] **M3 — RHI v1 + first triangle**
-  - [ ] RHI types: Device, Queue, CmdBuffer, Pipeline, Buffer, Texture, Sampler, Fence
-  - [ ] Metal backend implementation
-  - [ ] Triangle drawn via RHI
-  - [ ] Mock backend for unit tests
-  - [ ] Integration: triangle golden image
+- [x] **M3 — RHI v1 + first triangle**
+  - [x] RHI types: Device, Queue, CommandBuffer, RenderEncoder, Buffer, Texture, Shader, RenderPipeline, Swapchain, SwapchainFrame
+  - [x] Metal backend implementation (one TU per type, PIMPL via `void* native()`)
+  - [x] Triangle drawn via RHI from inline MSL (hello_metal demo, 119 fps)
+  - [x] Integration: triangle into offscreen RGBA8 + center-pixel + corner-clear assertions
+  - [—] Sampler / Fence (deferred — Sampler lands at M4, Fence at M10)
+  - [—] Mock backend for unit tests (deferred to M5 when frame graph needs it)
+  - [—] Pixel-perfect golden image (deferred to M9, needs perceptual diff harness)
 - [ ] **M4 — Mesh + camera + basic forward**
   - [ ] cgltf glTF loader
   - [ ] MeshBuffer (vertex, index, attribute layout)

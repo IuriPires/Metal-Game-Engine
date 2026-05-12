@@ -21,15 +21,14 @@ set_source_files_properties(src/app.mm src/window.mm
     PROPERTIES COMPILE_FLAGS "-fno-objc-arc")
 
 target_link_libraries(mge_platform
-    PUBLIC
-        metal_cpp::metal_cpp
     PRIVATE
         mge::core
-        mge::renderer_metal
         mge_warnings
         mge_sanitizers
         "-framework AppKit"
         "-framework Cocoa"
+        "-framework Foundation"
+        "-framework QuartzCore"
 )
 
 # AppKit triggers a few warnings (deprecated APIs, old-style casts in headers)

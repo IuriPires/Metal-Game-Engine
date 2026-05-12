@@ -1,20 +1,13 @@
 // macOS window with a CAMetalLayer-backed content view. Lives in a single .mm
-// translation unit per ADR-0001. Exposes a pure-C++ Window class; the
-// renderer pulls the CA::MetalLayer pointer out of it.
+// translation unit per ADR-0001. Exposes a pure-C++ Window class; consumers
+// receive the layer as an opaque void* via native_layer() and pass it to
+// mge::rhi::Device::create_swapchain.
 
 #include "mge/platform/window.h"
 
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/CAMetalLayer.h>
-
-// metal-cpp's CA::MetalLayer is layout-compatible with the Objective-C
-// CAMetalLayer pointer. We cast at the boundary.
-#include "mge/renderer/metal/metal_cpp.h"
-
-namespace mge::platform {
-
-}  // anchor; nothing yet
 
 @interface MGEMetalView : NSView
 @end
@@ -161,9 +154,10 @@ std::uint32_t Window::drawable_height() const noexcept {
     }
 }
 
-CA::MetalLayer* Window::metal_layer() noexcept {
-    // CAMetalLayer* (Obj-C) and CA::MetalLayer* (metal-cpp) are layout-compatible.
-    return reinterpret_cast<CA::MetalLayer*>(impl_->layer);
+void* Window::native_layer() noexcept {
+    // CAMetalLayer* is layout-compatible with metal-cpp's CA::MetalLayer*.
+    // Consumers cast to whichever they need.
+    return static_cast<void*>(impl_->layer);
 }
 
 }  // namespace mge::platform

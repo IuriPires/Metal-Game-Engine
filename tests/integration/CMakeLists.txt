@@ -1,7 +1,7 @@
 # tests/integration
 #
-# End-to-end tests that exercise the real Metal device. These require a
-# Metal-capable system; CI runs them on macos-14 arm64.
+# End-to-end tests that exercise a real Metal device through the RHI.
+# CI runs them on macos-14 arm64.
 
 if(NOT APPLE)
     return()
@@ -10,12 +10,13 @@ endif()
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 
 add_executable(mge_integration_tests
-    test_clear_offscreen.cpp
+    test_clear_rhi.cpp
+    test_triangle_offscreen.cpp
 )
 
 target_link_libraries(mge_integration_tests
     PRIVATE
-        mge::renderer_metal
+        mge::rhi_metal
         mge::core
         doctest::doctest
         mge_warnings

@@ -1,26 +1,35 @@
 # engine/renderer/metal
 #
-# Phase 1 / M1: minimal Metal-cpp glue - device wrapper, swapchain helper,
-# clear-only renderer, offscreen target with readback. M3 will fold these
-# behind the RHI.
+# Metal backend implementing the mge::rhi interface. One TU per RHI type.
+# metal_cpp_impl.cpp is the sole TU defining the *_PRIVATE_IMPLEMENTATION
+# macros.
 
-add_library(mge_renderer_metal STATIC
+add_library(mge_rhi_metal STATIC
     src/metal_cpp_impl.cpp
     src/device.cpp
+    src/queue.cpp
+    src/command_buffer.cpp
+    src/encoder.cpp
+    src/buffer.cpp
+    src/texture.cpp
+    src/shader.cpp
+    src/pipeline.cpp
     src/swapchain.cpp
-    src/clear_renderer.cpp
-    src/offscreen.cpp
+    src/offscreen_readback.cpp
 )
 
-target_include_directories(mge_renderer_metal
+target_include_directories(mge_rhi_metal
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_compile_features(mge_renderer_metal PUBLIC cxx_std_20)
+target_compile_features(mge_rhi_metal PUBLIC cxx_std_20)
 
-target_link_libraries(mge_renderer_metal
+target_link_libraries(mge_rhi_metal
     PUBLIC
+        mge::rhi
         metal_cpp::metal_cpp
     PRIVATE
         mge::core
@@ -28,13 +37,11 @@ target_link_libraries(mge_renderer_metal
         mge_sanitizers
 )
 
-# metal-cpp triggers a few conversion warnings on Apple Clang that we should
-# not let our strict warning baseline reject. Silence them locally.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
-    target_compile_options(mge_renderer_metal PRIVATE
+    target_compile_options(mge_rhi_metal PRIVATE
         -Wno-deprecated-declarations
         -Wno-old-style-cast
     )
 endif()
 
-add_library(mge::renderer_metal ALIAS mge_renderer_metal)
+add_library(mge::rhi_metal ALIAS mge_rhi_metal)

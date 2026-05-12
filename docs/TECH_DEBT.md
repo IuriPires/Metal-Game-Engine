@@ -87,8 +87,34 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 
 ### [P1-WINDOW-001] No window resize handling yet
 - **What**: `mge::platform::Window` does not react to user-driven resize. The CAMetalLayer's `drawableSize` stays at construction values.
-- **Why now**: M1's clear-only demo doesn't need it; the resize event plumbing wants a real input/event system, which lands in M2/M3.
+- **Why now**: Demo doesn't need it; the resize event plumbing wants a real input/event system, which lands in M4.
 - **Cost if left**: Resizing the demo window produces stretched / cropped output. Not crash-worthy.
-- **Fix path**: NSWindowDelegate's `windowDidResize:` + Swapchain::resize call. Add at M3 alongside the RHI.
+- **Fix path**: NSWindowDelegate's `windowDidResize:` + `Swapchain::resize` call. Move to M4 alongside the camera controller.
 - **Owner**: platform
+- **Created**: 2026-05-12
+
+## New debt opened in M3
+
+### [P1-RHI-MOCK-001] No mock RHI backend yet
+- **What**: Frame-graph / pass-level unit tests cannot run without a real Metal device. Currently all GPU coverage is in the integration suite.
+- **Why now**: M3 budget didn't include a full mock; deferring was the right call.
+- **Cost if left**: CI on non-Metal runners (Linux) cannot run RHI tests. Frame-graph TDD pace at M5 will suffer until mock lands.
+- **Fix path**: Build `mge_rhi_mock` at M5, link from a dedicated `mge_rhi_unit_tests` target.
+- **Owner**: renderer/rhi
+- **Created**: 2026-05-12
+
+### [P1-RHI-SHADERS-001] Shaders are inline string literals, runtime-compiled
+- **What**: MSL source for every pipeline is a `constexpr const char*` inside the consumer .cpp. Runtime compile via `MTL::Device::newLibrary` on every startup.
+- **Why now**: Shader pipeline tooling (offline metallib, hot reload, reflection) is M5/M6 territory.
+- **Cost if left**: Slow startup as scenes grow, no compile-time validation in CI.
+- **Fix path**: Offline shader compiler tool under `tools/shader_compiler/` produces a `.metallib`; ship with the binary. Hot reload via file watcher in Debug. Pencil for M5.
+- **Owner**: renderer/metal
+- **Created**: 2026-05-12
+
+### [P1-RHI-DRAW-001] RenderEncoder hard-codes TriangleList for now
+- **What**: `RenderEncoder::draw` ignores `RenderPipeline::topology()` and always passes `MTL::PrimitiveTypeTriangle`.
+- **Why now**: TriangleList is the only consumer in M3. Adding the lookup added test surface without a customer.
+- **Cost if left**: M4+ may want strips / lines / points and hit this immediately.
+- **Fix path**: Cache topology in encoder per `set_pipeline` call, use it in `draw`. Easy fix.
+- **Owner**: renderer/metal
 - **Created**: 2026-05-12

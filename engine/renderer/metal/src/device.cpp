@@ -1,47 +1,225 @@
-#include "mge/renderer/metal/device.h"
+#include "mge/rhi/device.h"
 
-namespace mge::renderer::metal {
+#include "format_conv.h"
+#include "mge/renderer/metal/metal_cpp.h"
 
-Device* Device::create() {
+#include <cstdio>
+#include <cstring>
+#include <utility>
+
+namespace mge::rhi {
+
+namespace mb = metal_backend;
+
+std::unique_ptr<Device> Device::create() {
     MTL::Device* dev = MTL::CreateSystemDefaultDevice();
     if (dev == nullptr) {
         return nullptr;
     }
-    MTL::CommandQueue* q = dev->newCommandQueue();
-    if (q == nullptr) {
-        dev->release();
-        return nullptr;
-    }
-    auto* d     = new Device();
-    d->device_ = dev;
-    d->queue_  = q;
-    return d;
+    std::unique_ptr<Device> result(new Device());
+    result->native_ = dev;
+    return result;
 }
 
 Device::~Device() {
-    if (queue_ != nullptr) {
-        queue_->release();
-    }
-    if (device_ != nullptr) {
-        device_->release();
+    if (native_ != nullptr) {
+        static_cast<MTL::Device*>(native_)->release();
     }
 }
 
-std::string Device::name() const {
-    NS::String* s = device_->name();
-    return std::string(s->utf8String());
+DeviceInfo Device::info() const {
+    DeviceInfo i;
+    auto*      dev = static_cast<const MTL::Device*>(native_);
+    if (dev == nullptr) {
+        return i;
+    }
+    NS::String* name = const_cast<MTL::Device*>(dev)->name();
+    if (name != nullptr) {
+        i.name = name->utf8String();
+    }
+    i.has_unified_memory   = const_cast<MTL::Device*>(dev)->hasUnifiedMemory();
+    i.supports_ray_tracing = const_cast<MTL::Device*>(dev)->supportsRaytracing();
+    i.low_power            = const_cast<MTL::Device*>(dev)->lowPower();
+    return i;
 }
 
-bool Device::supports_ray_tracing() const noexcept {
-    return device_->supportsRaytracing();
+std::unique_ptr<Queue> Device::create_queue(std::string label) {
+    auto* dev = static_cast<MTL::Device*>(native_);
+    MTL::CommandQueue* q = dev->newCommandQueue();
+    if (q == nullptr) {
+        return nullptr;
+    }
+    if (!label.empty()) {
+        q->setLabel(mb::ns_str(label));
+    }
+    return std::unique_ptr<Queue>(new Queue(q, std::move(label)));
 }
 
-bool Device::is_low_power() const noexcept {
-    return device_->lowPower();
+std::unique_ptr<Buffer> Device::create_buffer(const BufferDesc& desc) {
+    auto* dev = static_cast<MTL::Device*>(native_);
+    if (desc.size == 0) {
+        return nullptr;
+    }
+
+    MTL::ResourceOptions opts = mb::resource_options_for(desc.storage);
+    MTL::Buffer*         buf  = nullptr;
+
+    if (desc.initial_data != nullptr && desc.initial_data_size > 0 &&
+        desc.storage != StorageMode::Private) {
+        buf = dev->newBuffer(desc.initial_data, desc.size, opts);
+    } else {
+        buf = dev->newBuffer(desc.size, opts);
+        if (buf != nullptr && desc.initial_data != nullptr && desc.initial_data_size > 0 &&
+            desc.storage != StorageMode::Private) {
+            const std::size_t n =
+                desc.initial_data_size < desc.size ? desc.initial_data_size : desc.size;
+            std::memcpy(buf->contents(), desc.initial_data, n);
+        }
+    }
+    if (buf == nullptr) {
+        return nullptr;
+    }
+    if (!desc.label.empty()) {
+        buf->setLabel(mb::ns_str(desc.label));
+    }
+    return std::unique_ptr<Buffer>(new Buffer(buf, desc.size, desc.usage, desc.storage,
+                                              desc.label));
 }
 
-bool Device::has_unified_memory() const noexcept {
-    return device_->hasUnifiedMemory();
+std::unique_ptr<Texture> Device::create_texture(const TextureDesc& desc) {
+    auto* dev = static_cast<MTL::Device*>(native_);
+
+    MTL::TextureDescriptor* td = MTL::TextureDescriptor::alloc()->init();
+    td->setTextureType(MTL::TextureType2D);
+    td->setPixelFormat(mb::to_mtl(desc.format));
+    td->setWidth(desc.width);
+    td->setHeight(desc.height);
+    td->setDepth(desc.depth);
+    td->setMipmapLevelCount(desc.mip_levels);
+    td->setStorageMode(mb::to_mtl(desc.storage));
+    td->setUsage(mb::to_mtl(desc.usage));
+
+    MTL::Texture* tex = dev->newTexture(td);
+    td->release();
+    if (tex == nullptr) {
+        return nullptr;
+    }
+    if (!desc.label.empty()) {
+        tex->setLabel(mb::ns_str(desc.label));
+    }
+    return std::unique_ptr<Texture>(new Texture(tex, desc, /*owned=*/true));
 }
 
-}  // namespace mge::renderer::metal
+std::unique_ptr<Shader> Device::create_shader_from_msl(const ShaderSourceDesc& desc) {
+    auto* dev = static_cast<MTL::Device*>(native_);
+
+    NS::String* src = NS::String::string(desc.msl_source.data(),
+                                          NS::UTF8StringEncoding);
+    MTL::CompileOptions* opts = MTL::CompileOptions::alloc()->init();
+    NS::Error*           err  = nullptr;
+
+    MTL::Library* lib = dev->newLibrary(src, opts, &err);
+    opts->release();
+    if (lib == nullptr) {
+        if (err != nullptr) {
+            const char* msg = err->localizedDescription()->utf8String();
+            std::fprintf(stderr, "[rhi/metal] shader compile failed: %s\n",
+                         msg ? msg : "(null)");
+        }
+        return nullptr;
+    }
+    if (!desc.label.empty()) {
+        lib->setLabel(mb::ns_str(desc.label));
+    }
+    return std::unique_ptr<Shader>(new Shader(lib, desc.label));
+}
+
+std::unique_ptr<RenderPipeline> Device::create_render_pipeline(const RenderPipelineDesc& desc) {
+    auto* dev = static_cast<MTL::Device*>(native_);
+
+    if (desc.vertex_shader == nullptr || desc.fragment_shader == nullptr) {
+        return nullptr;
+    }
+
+    auto* vlib = static_cast<MTL::Library*>(desc.vertex_shader->native());
+    auto* flib = static_cast<MTL::Library*>(desc.fragment_shader->native());
+
+    MTL::Function* vfn = vlib->newFunction(mb::ns_str(desc.vertex_entry));
+    MTL::Function* ffn = flib->newFunction(mb::ns_str(desc.fragment_entry));
+    if (vfn == nullptr || ffn == nullptr) {
+        if (vfn) vfn->release();
+        if (ffn) ffn->release();
+        std::fprintf(stderr, "[rhi/metal] missing function: vs=%s fs=%s\n",
+                     desc.vertex_entry.c_str(), desc.fragment_entry.c_str());
+        return nullptr;
+    }
+
+    MTL::RenderPipelineDescriptor* pd = MTL::RenderPipelineDescriptor::alloc()->init();
+    pd->setVertexFunction(vfn);
+    pd->setFragmentFunction(ffn);
+
+    for (std::uint32_t i = 0; i < desc.num_color_targets; ++i) {
+        MTL::RenderPipelineColorAttachmentDescriptor* ca =
+            pd->colorAttachments()->object(i);
+        ca->setPixelFormat(mb::to_mtl(desc.color_targets[i].format));
+        ca->setBlendingEnabled(desc.color_targets[i].blend);
+    }
+    if (desc.depth.format != PixelFormat::Undefined) {
+        pd->setDepthAttachmentPixelFormat(mb::to_mtl(desc.depth.format));
+    }
+
+    // Vertex descriptor.
+    if (!desc.vertex_layout.buffers.empty() || !desc.vertex_layout.attributes.empty()) {
+        MTL::VertexDescriptor* vd = MTL::VertexDescriptor::alloc()->init();
+        for (const auto& a : desc.vertex_layout.attributes) {
+            MTL::VertexAttributeDescriptor* ad = vd->attributes()->object(a.shader_location);
+            ad->setFormat(mb::to_mtl(a.format));
+            ad->setOffset(a.offset);
+            ad->setBufferIndex(a.buffer_slot);
+        }
+        for (std::size_t i = 0; i < desc.vertex_layout.buffers.size(); ++i) {
+            const auto& b = desc.vertex_layout.buffers[i];
+            MTL::VertexBufferLayoutDescriptor* bd = vd->layouts()->object(i);
+            bd->setStride(b.stride);
+            bd->setStepFunction(b.per_instance ? MTL::VertexStepFunctionPerInstance
+                                                : MTL::VertexStepFunctionPerVertex);
+            bd->setStepRate(1);
+        }
+        pd->setVertexDescriptor(vd);
+        vd->release();
+    }
+
+    if (!desc.label.empty()) {
+        pd->setLabel(mb::ns_str(desc.label));
+    }
+
+    NS::Error*               err = nullptr;
+    MTL::RenderPipelineState* pso = dev->newRenderPipelineState(pd, &err);
+    pd->release();
+    vfn->release();
+    ffn->release();
+
+    if (pso == nullptr) {
+        if (err != nullptr) {
+            std::fprintf(stderr, "[rhi/metal] pipeline build failed: %s\n",
+                         err->localizedDescription()->utf8String());
+        }
+        return nullptr;
+    }
+
+    return std::unique_ptr<RenderPipeline>(new RenderPipeline(pso, desc.topology,
+                                                              desc.label));
+}
+
+std::unique_ptr<Swapchain> Device::create_swapchain(void* native_layer, PixelFormat fmt) {
+    if (native_layer == nullptr) {
+        return nullptr;
+    }
+    auto* layer = static_cast<CA::MetalLayer*>(native_layer);
+    layer->setDevice(static_cast<MTL::Device*>(native_));
+    layer->setPixelFormat(mb::to_mtl(fmt));
+    layer->setFramebufferOnly(true);
+    return std::unique_ptr<Swapchain>(new Swapchain(layer, this, fmt));
+}
+
+}  // namespace mge::rhi
