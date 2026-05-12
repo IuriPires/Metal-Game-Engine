@@ -424,12 +424,14 @@ constexpr const char* k_gbuffer_msl = R"(
     }
 )";
 
-// ---------- M16 — Skinned gbuffer vertex shader ----------
+// ---------- M17 — Compute skinning kernel ----------
 //
-// Same gbuffer output as the rigid path (fragment shader from k_gbuffer_msl
-// is reused). The vertex shader skins 4 joint influences per vertex from a
-// JointBuffer bound at slot 3.
-constexpr const char* k_skinned_gbuffer_msl = R"(
+// One thread per source vertex. Reads a SkinnedVertex, blends 4 weighted joint
+// transforms, writes a PbrVertex (position + normal) to a Private output
+// buffer. The G-Buffer pass then draws the tube with the standard rigid
+// gbuffer pipeline — no skinning shader needed downstream. Same output is
+// reusable by shadow / RT (once dynamic TLAS lands).
+constexpr const char* k_skin_compute_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
 
@@ -439,57 +441,36 @@ constexpr const char* k_skinned_gbuffer_msl = R"(
         float4        weights;
         uint4         joints;
     };
-    struct InstanceData {
-        float4x4 model;
-        float4x4 model_inv_t;
-        float4   albedo_ao;
-        float4   mr;
-    };
-    struct FrameConstants {
-        float4x4 view_proj;
-        float4x4 light_view_proj;
+    struct PbrVertex {
+        packed_float3 position; float _p0;
+        packed_float3 normal;   float _p1;
     };
     constant constexpr int kBones = 6;
     struct JointBuffer { float4x4 joints[kBones]; };
 
-    struct VSOut {
-        float4 position [[position]];
-        float3 normal_ws;
-        uint   iid [[flat]];
-    };
-
-    vertex VSOut skinned_gbuffer_vs(uint vid [[vertex_id]],
-                                      uint iid [[instance_id]],
-                                      device const SkinnedVertex* verts    [[buffer(0)]],
-                                      device const InstanceData*  instances [[buffer(1)]],
-                                      device const FrameConstants& fc       [[buffer(2)]],
-                                      device const JointBuffer&    jb       [[buffer(3)]]) {
-        SkinnedVertex v = verts[vid];
+    kernel void skin_tube(device const SkinnedVertex* src  [[buffer(0)]],
+                            device const JointBuffer&    jb   [[buffer(1)]],
+                            device PbrVertex*            dst  [[buffer(2)]],
+                            constant uint&               count [[buffer(3)]],
+                            uint gid [[thread_position_in_grid]]) {
+        if (gid >= count) return;
+        SkinnedVertex v = src[gid];
         float4 lp = float4(v.position, 1.0);
         float4 ln = float4(v.normal,   0.0);
-        float4 skinned_p = float4(0);
-        float4 skinned_n = float4(0);
+        float4 sp = float4(0);
+        float4 sn = float4(0);
         for (int i = 0; i < 4; ++i) {
             float w = v.weights[i];
             if (w > 0.0) {
                 float4x4 J = jb.joints[v.joints[i]];
-                skinned_p += (J * lp) * w;
-                skinned_n += (J * ln) * w;
+                sp += (J * lp) * w;
+                sn += (J * ln) * w;
             }
         }
-        const InstanceData inst = instances[iid];
-        float4 ws_pos = inst.model * float4(skinned_p.xyz, 1.0);
-        // For skinning we already applied the joint rotation; just rotate the
-        // result by the model matrix's rotation. inst.model_inv_t is the right
-        // transform for normals from the instance, but joint rotation is
-        // already orthonormal so we can reuse the same normal transform.
-        float3 ws_n = (inst.model_inv_t * float4(skinned_n.xyz, 0.0)).xyz;
-
-        VSOut o;
-        o.position  = fc.view_proj * ws_pos;
-        o.normal_ws = normalize(ws_n);
-        o.iid       = iid;
-        return o;
+        PbrVertex out;
+        out.position = packed_float3(sp.xyz);
+        out.normal   = packed_float3(normalize(sn.xyz));
+        dst[gid] = out;
     }
 )";
 
@@ -1367,15 +1348,22 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_ground;
     std::unique_ptr<mge::rhi::AccelerationStructure> tlas;
 
-    // M16 — Skinned mesh
-    std::unique_ptr<mge::rhi::Shader>          skinned_gbuffer_shader;
-    std::unique_ptr<mge::rhi::RenderPipeline>  skinned_gbuffer_pso;
-    std::unique_ptr<mge::rhi::Buffer>          tube_vbuf;
-    std::unique_ptr<mge::rhi::Buffer>          tube_ibuf;
-    std::uint32_t                              tube_index_count = 0;
-    std::unique_ptr<mge::rhi::Buffer>          tube_joint_buf;
-    float                                      tube_bone_span   = 0.0f;
-    float                                      tube_height      = 0.0f;
+    // M16+M17 — Skinned mesh with compute-driven skinning. The source verts
+    // (SkinnedVertex) live in tube_vbuf; each frame a compute kernel reads
+    // them + the joint buffer and writes a deformed PbrVertex stream into
+    // tube_skinned_vbuf. The G-Buffer pass then draws the tube with the
+    // standard rigid gbuffer pipeline.
+    std::unique_ptr<mge::rhi::Shader>           skin_compute_shader;
+    std::unique_ptr<mge::rhi::ComputePipeline>  skin_compute_pso;
+    std::unique_ptr<mge::rhi::Buffer>           tube_vbuf;             // SkinnedVertex
+    std::unique_ptr<mge::rhi::Buffer>           tube_skinned_vbuf;     // PbrVertex out
+    std::unique_ptr<mge::rhi::Buffer>           tube_skin_count_buf;   // uint count
+    std::unique_ptr<mge::rhi::Buffer>           tube_ibuf;
+    std::uint32_t                               tube_vertex_count = 0;
+    std::uint32_t                               tube_index_count  = 0;
+    std::unique_ptr<mge::rhi::Buffer>           tube_joint_buf;
+    float                                       tube_bone_span    = 0.0f;
+    float                                       tube_height       = 0.0f;
 
     // M14 — HZB occlusion culling
     std::unique_ptr<mge::rhi::Shader>           hzb_build_shader;
@@ -1419,15 +1407,15 @@ struct DeferredRenderer {
             r->device->create_shader_from_msl({k_hzb_build_msl,        "hzb.build"});
         r->hzb_stats_shader        =
             r->device->create_shader_from_msl({k_hzb_stats_msl,        "hzb.stats"});
-        r->skinned_gbuffer_shader  =
-            r->device->create_shader_from_msl({k_skinned_gbuffer_msl,  "skinned.gbuffer"});
+        r->skin_compute_shader     =
+            r->device->create_shader_from_msl({k_skin_compute_msl,     "skin.compute"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
             !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
             !r->overlay_shader || !r->particle_compute_shader ||
             !r->particle_render_shader || !r->lighting_rt_shader ||
             !r->hzb_build_shader || !r->hzb_stats_shader ||
-            !r->skinned_gbuffer_shader) {
+            !r->skin_compute_shader) {
             return nullptr;
         }
 
@@ -1487,6 +1475,8 @@ struct DeferredRenderer {
                                BufferUsage::Index, "cube.ibuf");
 
         // Skinned tube: 16 radial × 24 length segments, 2m tall, 0.18m radius.
+        // M17: source verts live in `tube_vbuf` (SkinnedVertex), the compute
+        // kernel writes deformed PbrVertex into `tube_skinned_vbuf` each frame.
         {
             constexpr std::uint32_t kRadial = 16;
             constexpr std::uint32_t kLength = 24;
@@ -1495,13 +1485,32 @@ struct DeferredRenderer {
             r->tube_height    = kHeight;
             r->tube_bone_span = kHeight / static_cast<float>(kSkinnedTubeBones - 1u);
             const auto tube = make_skinned_tube(kRadial, kLength, kHeight, kRadius);
-            r->tube_index_count = static_cast<std::uint32_t>(tube.indices.size());
+            r->tube_vertex_count = static_cast<std::uint32_t>(tube.vertices.size());
+            r->tube_index_count  = static_cast<std::uint32_t>(tube.indices.size());
             r->tube_vbuf = upload(tube.vertices.data(),
                                    tube.vertices.size() * sizeof(SkinnedVertex),
-                                   BufferUsage::Vertex, "tube.vbuf");
+                                   BufferUsage::Storage, "tube.skin_src");
             r->tube_ibuf = upload(tube.indices.data(),
                                    tube.indices.size() * sizeof(std::uint32_t),
-                                   BufferUsage::Index,  "tube.ibuf");
+                                   BufferUsage::Index,   "tube.ibuf");
+            {
+                BufferDesc d;
+                d.size    = tube.vertices.size() * sizeof(mge::assets::PbrVertex);
+                d.usage   = BufferUsage::Vertex | BufferUsage::Storage;
+                d.storage = StorageMode::Private;   // GPU-only; gbuffer reads it
+                d.label   = "tube.skin_dst";
+                r->tube_skinned_vbuf = r->device->create_buffer(d);
+            }
+            {
+                BufferDesc d;
+                d.size    = sizeof(std::uint32_t);
+                d.usage   = BufferUsage::Uniform;
+                d.storage = StorageMode::Shared;
+                d.label   = "tube.skin_count";
+                r->tube_skin_count_buf = r->device->create_buffer(d);
+                *static_cast<std::uint32_t*>(r->tube_skin_count_buf->contents()) =
+                    r->tube_vertex_count;
+            }
             BufferDesc jb;
             jb.size    = sizeof(JointBuffer);
             jb.usage   = BufferUsage::Uniform;
@@ -1734,26 +1743,13 @@ struct DeferredRenderer {
             r->gbuffer_pso             = r->device->create_render_pipeline(pd);
         }
 
-        // M16 — skinned gbuffer PSO. No vertex descriptor: the vertex shader
-        // reads from a structured SkinnedVertex buffer via vid. Reuses the
-        // rigid gbuffer fragment shader since the output is identical.
+        // M17 — compute skin PSO.
         {
-            RenderPipelineDesc pd;
-            pd.vertex_shader   = r->skinned_gbuffer_shader.get();
-            pd.fragment_shader = r->gbuffer_shader.get();
-            pd.vertex_entry    = "skinned_gbuffer_vs";
-            pd.fragment_entry  = "gbuffer_fs";
-            pd.topology        = PrimitiveTopology::TriangleList;
-            pd.color_targets[0].format = PixelFormat::RGBA8Unorm;
-            pd.color_targets[1].format = PixelFormat::RGBA16Float;
-            pd.num_color_targets       = 2;
-            pd.depth.format            = PixelFormat::Depth32Float;
-            pd.depth.write_enabled     = true;
-            pd.depth.compare           = DepthCompare::Less;
-            pd.rasterizer.cull_mode    = CullMode::Back;
-            pd.rasterizer.front_face   = FrontFace::CounterClockwise;
-            pd.label                   = "skinned.gbuffer.pso";
-            r->skinned_gbuffer_pso     = r->device->create_render_pipeline(pd);
+            ComputePipelineDesc pd;
+            pd.compute_shader = r->skin_compute_shader.get();
+            pd.compute_entry  = "skin_tube";
+            pd.label          = "skin.compute.pso";
+            r->skin_compute_pso = r->device->create_compute_pipeline(pd);
         }
 
         {
@@ -1928,8 +1924,8 @@ struct DeferredRenderer {
             !r->bright_pso || !r->downsample_pso || !r->upsample_pso || !r->overlay_pso ||
             !r->particle_step_pso || !r->particle_render_pso ||
             !r->hzb_build_pso || !r->hzb_stats_pso ||
-            !r->skinned_gbuffer_pso || !r->tube_vbuf || !r->tube_ibuf ||
-            !r->tube_joint_buf) {
+            !r->skin_compute_pso || !r->tube_vbuf || !r->tube_skinned_vbuf ||
+            !r->tube_skin_count_buf || !r->tube_ibuf || !r->tube_joint_buf) {
             return nullptr;
         }
 
@@ -2465,9 +2461,9 @@ int run_windowed(const Args& a) {
             emit_text(glyphs, kPad, y, kScale, gray, buf);
             y += kLineH;
 
-            std::snprintf(buf, sizeof(buf), "SKIN BONES %u  VERTS %u",
+            std::snprintf(buf, sizeof(buf), "SKIN BONES %u  VERTS %u  (COMPUTE)",
                           static_cast<unsigned>(kSkinnedTubeBones),
-                          r->tube_index_count / 3u);
+                          r->tube_vertex_count);
             emit_text(glyphs, kPad, y, kScale, gray, buf);
             y += kLineH;
 
@@ -2565,6 +2561,25 @@ int run_windowed(const Args& a) {
                 }
             });
 
+        // M17 — skin compute pass. Runs once per frame before gbuffer; writes
+        // the deformed tube vertex buffer that gbuffer + (future) shadow + RT
+        // will consume. No FG buffer handles yet (P1-FG-BUFFER-001), so the
+        // ordering between this pass and gbuffer is established by
+        // declaration order on the same command buffer.
+        fg.add_pass("skin",
+            [&](PassBuilder&) {},
+            [&](RenderContext& ctx) {
+                auto enc = ctx.cmd().begin_compute_pass("skin.tube");
+                enc.set_pipeline(*r->skin_compute_pso);
+                enc.set_buffer(*r->tube_vbuf,           0);
+                enc.set_buffer(*r->tube_joint_buf,      1);
+                enc.set_buffer(*r->tube_skinned_vbuf,   2);
+                enc.set_buffer(*r->tube_skin_count_buf, 3);
+                const std::uint32_t tg =
+                    r->skin_compute_pso->thread_execution_width();
+                enc.dispatch_threads(r->tube_vertex_count, 1, 1, tg, 1, 1);
+            });
+
         fg.add_pass("gbuffer",
             [&](PassBuilder& pb) {
                 pb.write_color(gb0,   LoadAction::Clear, 0, 0, 0, 0);
@@ -2603,13 +2618,15 @@ int run_windowed(const Args& a) {
                                       *r->cube_ibuf, 0, cube_visible_count);
                 }
 
-                // M16 — skinned tube: separate PSO, joint buffer at slot 3.
+                // M17 — skinned tube draws with the rigid gbuffer PSO over the
+                // compute-skinned vertex buffer. No skinning math in the
+                // vertex stage; the compute pass that ran before this one
+                // already deformed `tube_skinned_vbuf` in place.
                 {
                     const std::size_t off = tube_slot * sizeof(InstanceData);
-                    enc.set_pipeline(*r->skinned_gbuffer_pso);
-                    enc.set_vertex_buffer(*r->tube_vbuf, 0);
+                    enc.set_pipeline(*r->gbuffer_pso);   // re-bind rigid pso
+                    enc.set_vertex_buffer(*r->tube_skinned_vbuf, 0);
                     enc.set_vertex_buffer(*r->instance_buf,   1, off);
-                    enc.set_vertex_buffer(*r->tube_joint_buf, 3);
                     enc.set_fragment_buffer(*r->instance_buf, 0, off);
                     enc.draw_indexed(r->tube_index_count, IndexType::UInt32,
                                       *r->tube_ibuf, 0, 1);

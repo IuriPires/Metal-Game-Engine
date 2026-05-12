@@ -170,8 +170,18 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
   - [—] **CPU vs compute skinning** — vertex-shader skinning is the M16 baseline. **M17 will move to compute** so shadow + gbuffer + RT can share the deformed mesh.
   - [—] **RT visibility for skinned mesh** — tube isn't in the TLAS; shares the deferral with P1-RT-STATIC-TLAS-001 (P1-SKIN-RT-001).
   - [—] **glTF animation import** — Phase 2 asset pipeline.
-- [ ] M17 — Skinning compute shader [unblocked by M12]
-- [ ] M17 — Skinning compute shader [unblocked by M12]
+- [x] **M17 — Skinning compute shader**
+  - [x] **`k_skin_compute_msl`** — kernel reads `SkinnedVertex` + `JointBuffer`, writes a deformed `PbrVertex` stream (one thread per vertex).
+  - [x] **`tube_skinned_vbuf`** — `Vertex|Storage` Private-storage buffer holding the post-skin verts; written by compute, read by the gbuffer vertex stage.
+  - [x] **Rigid gbuffer reuse** — skinned tube draws with the standard `gbuffer_pso` over the compute output. Vertex-shader skinning shader (`k_skinned_gbuffer_msl`) and the dedicated `skinned_gbuffer_pso` from M16 are removed.
+  - [x] **FrameGraph `skin` pass** — runs before `gbuffer`. Ordering held by declaration order (FG buffer handles still deferred via P1-FG-BUFFER-001).
+  - [x] HUD line now reads `SKIN BONES N  VERTS X  (COMPUTE)`.
+  - [—] **Skinned shadow casting + RT visibility** — same fix path as P1-SKIN-RT-001 / P1-RT-STATIC-TLAS-001. The compute output is already the right buffer to feed a future dynamic-TLAS BLAS rebuild.
+  - [—] **Multi-instance skinning** — one output buffer per instance vs structured-buffer indexing. Phase 2.
+
+## Phase 1.5 — Closeout
+
+Phase 1.5 ships: compute pipelines + GPU particles (M12) → inline RT shadows + metallic reflections (M13) → HZB occlusion build + stats (M14) → discrete LOD chain (M15) → skeletal animation (M16) → compute-driven skinning (M17). 13 ADRs, 82 tests green, 17 milestones across Phase 1 + 1.5, demo on M1 Pro renders deferred PBR + RT shadows + RT reflections + bloom + ACES + 32k GPU particles + LOD-batched spheres + compute-skinned tube + HZB stats + on-screen profiler overlay, locked to 120 FPS at 1080p.
 
 ## Phase 2 — Systems
 
