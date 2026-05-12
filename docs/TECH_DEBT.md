@@ -248,3 +248,35 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Fix path**: Add `mge::platform::Input` with keystate + mouse delta, drained inside `poll_events`. Pencil for M5 alongside the frame graph.
 - **Owner**: platform
 - **Created**: 2026-05-12
+
+### [P1-PROFILE-GPU-001] No GPU timestamp sampling
+- **What**: M11 ships a CPU profiler only. The HUD reports `cull` / `fill_instances` / `fg_compile` / `fg_execute` / `overlay_build` zone times but no per-pass GPU duration.
+- **Why now**: `MTLCounterSampleBuffer` + `MTLCounterSet` requires RHI plumbing (counter set discovery, sample buffer creation, per-pass sample boundaries) and a resolve step after each command buffer's `addCompletedHandler`. Worth its own milestone, not a tail of M11.
+- **Cost if left**: We can't attribute frame-time spikes to specific GPU passes from the overlay — we still have Xcode GPU Capture if we need it.
+- **Fix path**: M11.b. Add `mge::rhi::CounterSampleBuffer`; add `RenderEncoder::sample_counters_at_pass_boundary()`; resolve and feed back into `mge::profile` as `gpu:<pass>` zones.
+- **Owner**: renderer/metal + profile
+- **Created**: 2026-05-12
+
+### [P1-PROFILE-TRACY-001] Tracy not wired
+- **What**: Tracy is vendored in `third_party/` from M0 but `MGE_PROFILE_ZONE` does not forward to `TracyCZoneN` / `TracyCZoneEnd`.
+- **Why now**: Phase 1 has < 20 zones and the on-screen overlay is sufficient to validate per-frame behavior. Tracy's value scales with zone count.
+- **Cost if left**: No timeline view of zones, no cross-frame flame graphs, no remote inspection. Acceptable for Phase 1.
+- **Fix path**: Add a thin macro shim around Tracy's C API behind an `MGE_TRACY` CMake option. Compile-time toggle so Release default still ships zero overhead if unused.
+- **Owner**: profile
+- **Created**: 2026-05-12
+
+### [P1-PROFILE-FONT-001] Hand-coded bitmap font embedded in the demo
+- **What**: `examples/hello_metal/font8x8.h` is a 64-glyph hand-coded 8×8 bitmap font living in the demo, not the engine. ASCII subset only; no kerning, no Unicode, no fallback glyph.
+- **Why now**: M11 needs glyphs to render anything; an MSDF / stb_truetype pipeline is overkill for a debug overlay.
+- **Cost if left**: Can't render unsupported characters (`snprintf` callers must stick to the subset). Editor / non-Latin text is out of reach.
+- **Fix path**: Move to `engine/text/` when the editor lands; add stb_truetype + a SDF atlas baker. Keep the 8×8 font as a fallback debug overlay.
+- **Owner**: text (future)
+- **Created**: 2026-05-12
+
+### [P1-RHI-TEXUPLOAD-001] Font atlas upload bypasses RHI via metal-cpp escape hatch
+- **What**: `examples/hello_metal/main.cpp` uses `MTL::Texture::replaceRegion` directly to upload the 8-bit font atlas. The RHI `Texture` type has no `upload_region` / `replace_region` method yet.
+- **Why now**: M11 is the first time we needed CPU→GPU texture data after creation. Adding a proper RHI texture upload path (with staging buffer + blit encoder for private-storage textures) is a real interface change and would have pulled scope on M11.
+- **Cost if left**: One Metal-specific call leaks into the demo. The RHI abstraction has a hole for any future texture upload (e.g. glTF base color maps at M6.1, environment maps for IBL).
+- **Fix path**: Add `RhiTexture::upload_region(level, x, y, w, h, bytes, bytes_per_row)`; in the Metal backend, blit-encode shared→private when the texture is in `Storage::Private`. Lands with the glTF + texture loader.
+- **Owner**: rhi
+- **Created**: 2026-05-12

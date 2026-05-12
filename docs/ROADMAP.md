@@ -104,10 +104,20 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [x] **Spiral-of-death guard** — `max_steps_per_frame` caps catch-up; excess accumulator is dropped into `dropped_steps()` for visibility.
   - [x] Demo integrated: `--time-scale F`, `--target-fps N`, `--sim-hz N`, `--paused`, `--demo-mode` (auto-cycles normal → paused → slow-mo → fast-fwd every ~3s of wall time).
   - [—] **Triple-buffered sim snapshot ring** — deferred (single-threaded sim in Phase 1; ring becomes load-bearing only when sim runs on its own thread, Phase 1.5+).
-- [ ] **M11 — Profiling overlay**
-  - [ ] On-screen CPU/GPU/mem/VRAM widget
-  - [ ] Tracy zones across the engine
-  - [ ] Metal GPU timestamp sampling
+- [x] **M11 — Profiling overlay**
+  - [x] **`engine/profile/`** — `Profiler` singleton with `begin_zone`/`end_zone`, `MGE_PROFILE_ZONE(name)` RAII scope timer. Thread-safe via `std::mutex`. Per-name rolling window of 120 samples → `ZoneStats { last, avg, min, max }` via `snapshot()`. Linear scan zone lookup (< 20 zones in practice).
+  - [x] **Bitmap font 8×8** — 64-glyph hand-coded ASCII subset (`examples/hello_metal/font8x8.h`: space, digits, A–Z, punctuation). Uploaded to an R8 atlas (16 cols × 4 rows) via `MTL::Texture::replaceRegion` escape hatch.
+  - [x] **Overlay pass** — inline MSL with instanced glyph quads (`[[instance_id]]`-indexed `GlyphInstance` buffer, 32 B aligned: pos/scale/uv/color). Pipeline uses alpha blend (`SrcAlpha`/`OneMinusSrcAlpha`), `LoadAction::Load` on the backbuffer.
+  - [x] **Profile zones in the engine** — `cull`, `fill_instances`, `overlay_build`, `fg_compile`, `fg_execute`.
+  - [x] **Demo HUD lines** — title, FPS / MS / AVG, SIM/STEPS/ALPHA, CUBES (visible/total), STATE (PAUSED/SLOW/NORMAL/FAST), then per-zone `last_ms (avg)` for each tracked zone. Pure CPU; no GPU timestamp sample buffer yet.
+  - [x] **5 unit tests** — duration recorded, min/max/avg aggregation, zone independence, rolling-window cap at 120, `MGE_PROFILE_ZONE` macro records.
+  - [—] **Metal GPU timestamp sample buffers** (deferred to M11.b — needs `MTLCounterSampleBuffer` + `MTLCounterSet` plumbing through the RHI; CPU overlay is enough to close Phase 1).
+  - [—] **Tracy integration** (deferred to M11.b — Tracy is already vendored in `third_party/`; wiring `TracyCZoneN` requires a thin shim around `MGE_PROFILE_ZONE` and is a follow-up).
+  - [—] **VRAM / heap memory readout** (deferred — no `MTLHeap` sub-allocator yet; lands with the GPU heap manager in Phase 1.5).
+
+## Phase 1 — Closeout
+
+Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR → CSM shadows → frustum cull + GPU instancing → bloom + ACES → fixed-timestep game loop with decoupled render → on-screen CPU profiler overlay. 13-pass FrameGraph (shadow → gbuffer → lighting → bloom_bright → 4×ds → 4×us → tonemap → overlay), 84 tests green (79 ctest + 5 profiler), 1k cubes at ~120 FPS on M1 Pro with full deferred PBR + shadow + bloom + ACES + overlay.
 
 ## Phase 1.5 — Rendering extensions
 

@@ -17,6 +17,7 @@ target_link_libraries(hello_metal
         mge::assets
         mge::math
         mge::core
+        mge::profile
         mge_warnings
         mge_sanitizers
 )

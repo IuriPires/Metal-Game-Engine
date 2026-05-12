@@ -8,6 +8,7 @@ add_subdirectory(math)
 add_subdirectory(memory)
 add_subdirectory(scene)
 add_subdirectory(assets)
+add_subdirectory(profile)
 
 if(APPLE)
     add_subdirectory(renderer)
@@ -15,6 +16,5 @@ if(APPLE)
 endif()
 
 # Future (added per milestone):
-# add_subdirectory(jobs)        # M2/M10
-# add_subdirectory(profile)     # M2
-# add_subdirectory(ecs)         # M4+
+# add_subdirectory(jobs)        # Phase 1.5+
+# add_subdirectory(ecs)         # Phase 2+

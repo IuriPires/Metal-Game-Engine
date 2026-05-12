@@ -18,6 +18,7 @@ add_executable(mge_unit_tests
     test_pbr_primitives.cpp
     test_frustum.cpp
     test_game_loop.cpp
+    test_profiler.cpp
 )
 
 target_link_libraries(mge_unit_tests
@@ -27,6 +28,7 @@ target_link_libraries(mge_unit_tests
         mge::memory
         mge::scene
         mge::assets
+        mge::profile
         doctest::doctest
         mge_warnings
         mge_sanitizers

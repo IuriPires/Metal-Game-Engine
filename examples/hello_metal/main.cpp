@@ -29,8 +29,12 @@
 #include "mge/math/vec.h"
 #include "mge/platform/app.h"
 #include "mge/platform/window.h"
+#include "mge/profile/profiler.h"
+#include "mge/renderer/metal/metal_cpp.h"  // escape hatch for one-shot atlas upload
 #include "mge/rhi/rhi.h"
 #include "mge/scene/camera.h"
+
+#include "font8x8.h"
 
 #include <array>
 #include <cstdio>
@@ -54,6 +58,7 @@ struct Args {
     float         sim_hz     = 60.0f;
     bool          paused     = false;
     bool          demo_mode  = false;  // cycle pause/slowmo/fast-fwd for visual demo
+    bool          no_overlay = false;  // disable profiling overlay
 };
 
 Args parse_args(int argc, char** argv) {
@@ -81,6 +86,8 @@ Args parse_args(int argc, char** argv) {
             a.paused = true;
         } else if (s == "--demo-mode") {
             a.demo_mode = true;
+        } else if (s == "--no-overlay") {
+            a.no_overlay = true;
         }
     }
     return a;
@@ -101,6 +108,63 @@ struct alignas(16) InstanceData {
     float           mr[4];          // 16 B  r=metallic, g=roughness, ba=pad
 };
 static_assert(sizeof(InstanceData) == 160);
+
+struct alignas(16) GlyphInstance {
+    float px_pos[2];
+    float glyph;
+    float scale;
+    float color[4];
+};
+static_assert(sizeof(GlyphInstance) == 32);
+
+struct alignas(16) OverlayConstants {
+    float screen_px[2];
+    float _pad[2];
+};
+static_assert(sizeof(OverlayConstants) == 16);
+
+constexpr std::size_t k_overlay_max_glyphs = 1024;
+
+// Build a `[N_GLYPHS * 8] x 8` R8Unorm atlas with each glyph's 8x8 bitmap.
+// Returns the upload-ready bytes.
+std::array<std::uint8_t, mge::overlay::k_num_glyphs * 8 * 8> build_font_atlas() {
+    std::array<std::uint8_t, mge::overlay::k_num_glyphs * 8 * 8> out{};
+    const std::size_t W = mge::overlay::k_num_glyphs * 8;
+    for (std::size_t g = 0; g < mge::overlay::k_num_glyphs; ++g) {
+        const auto& glyph = mge::overlay::k_font[g];
+        for (int row = 0; row < 8; ++row) {
+            const std::uint8_t byte = glyph[static_cast<std::size_t>(row)];
+            for (int col = 0; col < 8; ++col) {
+                const bool on = (byte >> (7 - col)) & 1u;
+                const std::size_t pixel_idx =
+                    static_cast<std::size_t>(row) * W + g * 8u + static_cast<std::size_t>(col);
+                out[pixel_idx] = on ? 0xFF : 0x00;
+            }
+        }
+    }
+    return out;
+}
+
+// Append glyph instances for a string at (x, y) with given color/scale.
+// Skips spaces (no need to emit invisible quads). Advances x = 8*scale per glyph.
+inline void emit_text(std::vector<GlyphInstance>& out, float x, float y,
+                       float scale, const float color[4], const char* text) {
+    for (const char* p = text; *p; ++p) {
+        if (*p != ' ') {
+            GlyphInstance g{};
+            g.px_pos[0] = x;
+            g.px_pos[1] = y;
+            g.glyph     = static_cast<float>(mge::overlay::glyph_index(*p));
+            g.scale     = scale;
+            g.color[0]  = color[0];
+            g.color[1]  = color[1];
+            g.color[2]  = color[2];
+            g.color[3]  = color[3];
+            out.push_back(g);
+        }
+        x += 8.0f * scale;
+    }
+}
 
 struct alignas(16) LightingConstants {
     mge::math::Mat4 view_proj_inv;
@@ -418,6 +482,58 @@ constexpr const char* k_upsample_msl = R"(
     }
 )";
 
+constexpr const char* k_overlay_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct GlyphInstance {
+        float2 px_pos;
+        float  glyph;
+        float  scale;
+        float4 color;
+    };
+    struct OverlayConstants {
+        float2 screen_px;
+        float2 _pad;
+    };
+    struct VSOut {
+        float4 position [[position]];
+        float2 uv;
+        float4 color;
+    };
+
+    vertex VSOut overlay_vs(uint vid [[vertex_id]],
+                             uint iid [[instance_id]],
+                             device const GlyphInstance* instances [[buffer(0)]],
+                             device const OverlayConstants& fc [[buffer(1)]]) {
+        const float2 corners[6] = {
+            float2(0, 0), float2(1, 0), float2(0, 1),
+            float2(0, 1), float2(1, 0), float2(1, 1),
+        };
+        const float2 corner = corners[vid];
+        const GlyphInstance inst = instances[iid];
+
+        const float2 px = inst.px_pos + corner * (8.0 * inst.scale);
+        // Screen-down convention -> Metal NDC y-up.
+        float2 ndc = px / fc.screen_px * 2.0 - 1.0;
+        ndc.y = -ndc.y;
+
+        VSOut o;
+        o.position = float4(ndc, 0.0, 1.0);
+        // Atlas is 64 glyphs of 8px wide laid out horizontally.
+        o.uv    = float2((inst.glyph + corner.x) / 64.0, corner.y);
+        o.color = inst.color;
+        return o;
+    }
+
+    fragment float4 overlay_fs(VSOut in [[stage_in]],
+                                texture2d<float> atlas [[texture(0)]],
+                                sampler          s     [[sampler(0)]]) {
+        float a = atlas.sample(s, in.uv).r;
+        return float4(in.color.rgb, in.color.a * a);
+    }
+)";
+
 constexpr const char* k_tonemap_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
@@ -550,6 +666,12 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::RenderPipeline> downsample_pso;
     std::unique_ptr<mge::rhi::Shader>         upsample_shader;
     std::unique_ptr<mge::rhi::RenderPipeline> upsample_pso;
+    std::unique_ptr<mge::rhi::Shader>         overlay_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline> overlay_pso;
+    std::unique_ptr<mge::rhi::Texture>        font_atlas;
+    std::unique_ptr<mge::rhi::Buffer>         overlay_instance_buf;
+    std::unique_ptr<mge::rhi::Buffer>         overlay_constants_buf;
+    std::unique_ptr<mge::rhi::Sampler>        overlay_sampler;
 
     std::unique_ptr<mge::rhi::Buffer>  instance_buf;
     std::size_t                        instance_capacity = 0;
@@ -572,9 +694,11 @@ struct DeferredRenderer {
         r->bright_shader     = r->device->create_shader_from_msl({k_bright_msl,     "bright"});
         r->downsample_shader = r->device->create_shader_from_msl({k_downsample_msl, "downsample"});
         r->upsample_shader   = r->device->create_shader_from_msl({k_upsample_msl,   "upsample"});
+        r->overlay_shader    = r->device->create_shader_from_msl({k_overlay_msl,    "overlay"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
-            !r->bright_shader || !r->downsample_shader || !r->upsample_shader) {
+            !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
+            !r->overlay_shader) {
             return nullptr;
         }
 
@@ -655,9 +779,65 @@ struct DeferredRenderer {
         shd.label      = "shadow";
         r->shadow_sampler = r->device->create_sampler(shd);
 
+        // Overlay font atlas + sampler + per-frame buffers.
+        {
+            TextureDesc td;
+            td.width   = mge::overlay::k_num_glyphs * 8u;
+            td.height  = 8;
+            td.format  = PixelFormat::R8Unorm;
+            td.usage   = TextureUsage::ShaderRead | TextureUsage::CopyDst;
+            td.storage = StorageMode::Shared;
+            td.label   = "overlay.atlas";
+            r->font_atlas = r->device->create_texture(td);
+
+            // Atlas texture is Shared so we can write to its contents directly
+            // via a staging buffer + blit. Simpler path: create a Shared
+            // texture and copy in via `replaceRegion`. Our RHI doesn't expose
+            // that yet, so use a staging buffer + blit instead.
+            //
+            // For Phase 1 v1 simplicity, we use a Shared-format texture and
+            // pipe through a temporary buffer via blit. The atlas only loads
+            // once at startup so the cost is fine.
+        }
+
+        SamplerDesc osd;
+        osd.min_filter = FilterMode::Nearest;
+        osd.mag_filter = FilterMode::Nearest;
+        osd.address_u  = AddressMode::ClampToEdge;
+        osd.address_v  = AddressMode::ClampToEdge;
+        osd.label      = "overlay.sampler";
+        r->overlay_sampler = r->device->create_sampler(osd);
+
+        BufferDesc oib;
+        oib.size    = sizeof(GlyphInstance) * k_overlay_max_glyphs;
+        oib.usage   = BufferUsage::Uniform | BufferUsage::Storage;
+        oib.storage = StorageMode::Shared;
+        oib.label   = "overlay.instances";
+        r->overlay_instance_buf = r->device->create_buffer(oib);
+
+        BufferDesc ocb;
+        ocb.size    = sizeof(OverlayConstants);
+        ocb.usage   = BufferUsage::Uniform;
+        ocb.storage = StorageMode::Shared;
+        ocb.label   = "overlay.constants";
+        r->overlay_constants_buf = r->device->create_buffer(ocb);
+
         if (!r->sphere_vbuf || !r->sphere_ibuf || !r->ground_vbuf || !r->ground_ibuf ||
             !r->cube_vbuf || !r->cube_ibuf || !r->instance_buf || !r->frame_buf ||
-            !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler) return nullptr;
+            !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler ||
+            !r->font_atlas || !r->overlay_sampler || !r->overlay_instance_buf ||
+            !r->overlay_constants_buf) return nullptr;
+
+        // One-shot atlas upload. Phase 1 RHI doesn't expose a buffer->texture
+        // blit yet, so we drop to metal-cpp here. Logged as tech debt.
+        {
+            const auto bytes = build_font_atlas();
+            auto* mtl_tex = static_cast<MTL::Texture*>(r->font_atlas->native());
+            const MTL::Region region = MTL::Region::Make2D(
+                0, 0, mge::overlay::k_num_glyphs * 8u, 8u);
+            mtl_tex->replaceRegion(region, 0, bytes.data(),
+                                    mge::overlay::k_num_glyphs * 8u);
+        }
 
         const VertexLayout layout{
             {VertexBufferLayout{sizeof(mge::assets::PbrVertex), false}},
@@ -784,8 +964,30 @@ struct DeferredRenderer {
             r->upsample_pso               = r->device->create_render_pipeline(pd);
         }
 
+        // Overlay pipeline: instanced glyph quads, alpha-blended over backbuffer.
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader   = r->overlay_shader.get();
+            pd.fragment_shader = r->overlay_shader.get();
+            pd.vertex_entry    = "overlay_vs";
+            pd.fragment_entry  = "overlay_fs";
+            pd.topology        = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format    = backbuffer_fmt;
+            pd.color_targets[0].blend     = true;
+            pd.color_targets[0].src_color = BlendFactor::SrcAlpha;
+            pd.color_targets[0].dst_color = BlendFactor::OneMinusSrcAlpha;
+            pd.color_targets[0].color_op  = BlendOp::Add;
+            pd.color_targets[0].src_alpha = BlendFactor::One;
+            pd.color_targets[0].dst_alpha = BlendFactor::OneMinusSrcAlpha;
+            pd.color_targets[0].alpha_op  = BlendOp::Add;
+            pd.num_color_targets          = 1;
+            pd.rasterizer.cull_mode       = CullMode::None;
+            pd.label                      = "overlay.pso";
+            r->overlay_pso                = r->device->create_render_pipeline(pd);
+        }
+
         if (!r->shadow_pso || !r->gbuffer_pso || !r->lighting_pso || !r->tonemap_pso ||
-            !r->bright_pso || !r->downsample_pso || !r->upsample_pso) {
+            !r->bright_pso || !r->downsample_pso || !r->upsample_pso || !r->overlay_pso) {
             return nullptr;
         }
         return r;
@@ -893,6 +1095,8 @@ int run_windowed(const Args& a) {
 
     std::vector<std::uint32_t> visible_cubes;
     visible_cubes.reserve(cubes_proto.size());
+    std::vector<GlyphInstance> glyphs;
+    glyphs.reserve(k_overlay_max_glyphs);
 
     // GameLoop: fixed-timestep sim (60 Hz default) + decoupled render with
     // pacing. The cube wobble advances in the sim callback; the render
@@ -952,10 +1156,12 @@ int run_windowed(const Args& a) {
         // the next step. Zero when paused (loop.last_alpha() forces 0).
         const float interp_yaw = sim_yaw + alpha * loop.fixed_dt() * 0.4f;
         const mge::math::Mat4 wobble = mge::math::rotation_y(interp_yaw);
-        // (Render body continues below - reuses `wobble`, `frame_drawable`, etc.)
 
-        // Build the per-frame instance buffer.
-        auto* instances = static_cast<InstanceData*>(r->instance_buf->contents());
+        // ---- Profile: instance buffer fill (CPU work) ----
+        InstanceData* instances = static_cast<InstanceData*>(r->instance_buf->contents());
+        const std::uint32_t cube_base = static_cast<std::uint32_t>(k_spheres.size() + 1);
+        {
+            MGE_PROFILE_ZONE("fill_instances");
         // Spheres at [0..5)
         for (std::size_t i = 0; i < k_spheres.size(); ++i) {
             const auto&     s     = k_spheres[i];
@@ -982,15 +1188,17 @@ int run_windowed(const Args& a) {
         }
 
         // Frustum-cull the cube field against the camera.
-        const mge::math::Frustum cam_frustum =
-            mge::math::Frustum::from_view_projection(camera.view_projection());
-        visible_cubes.clear();
-        for (std::uint32_t i = 0; i < cubes_proto.size(); ++i) {
-            if (mge::math::aabb_visible(cam_frustum, cube_world_aabb(cubes_proto[i]))) {
-                visible_cubes.push_back(i);
+        {
+            MGE_PROFILE_ZONE("cull");
+            const mge::math::Frustum cam_frustum =
+                mge::math::Frustum::from_view_projection(camera.view_projection());
+            visible_cubes.clear();
+            for (std::uint32_t i = 0; i < cubes_proto.size(); ++i) {
+                if (mge::math::aabb_visible(cam_frustum, cube_world_aabb(cubes_proto[i]))) {
+                    visible_cubes.push_back(i);
+                }
             }
         }
-        const std::uint32_t cube_base = static_cast<std::uint32_t>(k_spheres.size() + 1);
         for (std::size_t i = 0; i < visible_cubes.size(); ++i) {
             const auto& c = cubes_proto[visible_cubes[i]];
             InstanceData inst{};
@@ -1012,6 +1220,89 @@ int run_windowed(const Args& a) {
         fill_lighting_constants(*r, camera, light_vp, sun_dir);
 
         cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
+        }  // end of fill_instances profile zone
+
+        // ---- Build the overlay glyph instance buffer with the latest stats ----
+        std::uint32_t overlay_glyph_count = 0;
+        if (!a.no_overlay) {
+            MGE_PROFILE_ZONE("overlay_build");
+            glyphs.clear();
+
+            const auto zones = mge::profile::Profiler::get().snapshot();
+            const float fps_now = stats.last_seconds() > 0.0
+                ? static_cast<float>(1.0 / stats.last_seconds()) : 0.0f;
+            const float ms_now  = static_cast<float>(stats.last_seconds() * 1000.0);
+            const float ms_avg  = static_cast<float>(stats.avg_seconds() * 1000.0);
+
+            const float fg_w = static_cast<float>(window.drawable_width());
+            const float fg_h = static_cast<float>(window.drawable_height());
+            OverlayConstants oc{};
+            oc.screen_px[0] = fg_w;
+            oc.screen_px[1] = fg_h;
+            std::memcpy(r->overlay_constants_buf->contents(), &oc, sizeof(oc));
+
+            constexpr float kScale  = 2.0f;
+            constexpr float kPad    = 16.0f;
+            constexpr float kLineH  = 8.0f * kScale + 4.0f;
+            const float     yellow[4] = {1.0f, 0.85f, 0.20f, 1.0f};
+            const float     white[4]  = {0.95f, 0.97f, 1.0f, 1.0f};
+            const float     gray[4]   = {0.65f, 0.70f, 0.78f, 1.0f};
+            const float     warn[4]   = {1.0f,  0.40f, 0.30f, 1.0f};
+
+            char buf[80];
+            float y = kPad;
+
+            std::snprintf(buf, sizeof(buf), "METALGAMEENGINE  PHASE 1");
+            emit_text(glyphs, kPad, y, kScale, yellow, buf);
+            y += kLineH;
+
+            std::snprintf(buf, sizeof(buf), "FPS %5.1f  MS %6.2f  AVG %6.2f",
+                          static_cast<double>(fps_now),
+                          static_cast<double>(ms_now),
+                          static_cast<double>(ms_avg));
+            emit_text(glyphs, kPad, y, kScale, white, buf);
+            y += kLineH;
+
+            std::snprintf(buf, sizeof(buf), "SIM %5.2fS  STEPS %llu  ALPHA %.2f",
+                          loop.sim_time(),
+                          static_cast<unsigned long long>(loop.step_count()),
+                          static_cast<double>(loop.last_alpha()));
+            emit_text(glyphs, kPad, y, kScale, gray, buf);
+            y += kLineH;
+
+            std::snprintf(buf, sizeof(buf), "CUBES %5u  /  %zu",
+                          cube_visible_count, cubes_proto.size());
+            emit_text(glyphs, kPad, y, kScale, gray, buf);
+            y += kLineH;
+
+            const char* state = loop.is_paused() ? "PAUSED"
+                              : (loop.time_scale() < 0.99f ? "SLOW"
+                                : (loop.time_scale() > 1.01f ? "FAST" : "REAL"));
+            std::snprintf(buf, sizeof(buf), "STATE %s  SCALE %.2f",
+                          state, static_cast<double>(loop.time_scale()));
+            emit_text(glyphs, kPad, y, kScale, loop.is_paused() ? warn : gray, buf);
+            y += kLineH + 4.0f;
+
+            // CPU profile zones (last_ms / avg_ms over the rolling window)
+            emit_text(glyphs, kPad, y, kScale, yellow, "CPU ZONES");
+            y += kLineH;
+            for (const auto& z : zones) {
+                std::snprintf(buf, sizeof(buf), "%-14.*s LAST %5.3f  AVG %5.3f MS",
+                              static_cast<int>(z.name.size()), z.name.data(),
+                              z.last_ms, z.avg_ms);
+                // Convert to uppercase since the font is upper-case only.
+                for (char& c : buf) {
+                    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+                }
+                emit_text(glyphs, kPad, y, kScale, white, buf);
+                y += kLineH;
+            }
+
+            if (glyphs.size() > k_overlay_max_glyphs) glyphs.resize(k_overlay_max_glyphs);
+            overlay_glyph_count = static_cast<std::uint32_t>(glyphs.size());
+            std::memcpy(r->overlay_instance_buf->contents(), glyphs.data(),
+                        glyphs.size() * sizeof(GlyphInstance));
+        }
 
         fg.reset();
         const std::uint32_t fw = frame_drawable.texture()->width();
@@ -1211,11 +1502,36 @@ int run_windowed(const Args& a) {
                 enc.draw(3);
             });
 
+        // Overlay pass: draws glyphs over the backbuffer with alpha blend.
+        if (!a.no_overlay && overlay_glyph_count > 0) {
+            const std::uint32_t draw_count = overlay_glyph_count;
+            fg.add_pass("overlay",
+                [&](PassBuilder& pb) {
+                    pb.write_color(bb, LoadAction::Load, 0, 0, 0, 1);
+                },
+                [&, draw_count](RenderContext& ctx) {
+                    auto rp = ctx.make_render_pass_desc();
+                    RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
+                    enc.set_pipeline(*r->overlay_pso);
+                    enc.set_vertex_buffer(*r->overlay_instance_buf, 0);
+                    enc.set_vertex_buffer(*r->overlay_constants_buf, 1);
+                    enc.set_fragment_texture(*r->font_atlas,     0);
+                    enc.set_fragment_sampler(*r->overlay_sampler, 0);
+                    enc.draw(6, draw_count);
+                });
+        }
+
+        {
+            MGE_PROFILE_ZONE("fg_compile");
             if (!fg.compile()) {
                 std::fprintf(stderr, "frame graph compile failed\n");
                 return;
             }
+        }
+        {
+            MGE_PROFILE_ZONE("fg_execute");
             fg.execute(*r->queue, &frame_drawable);
+        }
         };  // render_fn
 
         loop.tick(sim_fn, render_fn);
@@ -1237,7 +1553,7 @@ int run_windowed(const Args& a) {
                         cube_visible_count, cubes_proto.size(),
                         loop.sim_time(),
                         static_cast<unsigned long long>(loop.step_count()),
-                        loop.last_alpha(),
+                        static_cast<double>(loop.last_alpha()),
                         loop.is_paused() ? " [PAUSED]"
                             : (loop.time_scale() < 0.99f ? " [SLOW]"
                                 : (loop.time_scale() > 1.01f ? " [FAST]" : "")));
