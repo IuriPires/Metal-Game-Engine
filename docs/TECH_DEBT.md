@@ -289,6 +289,22 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P2-EDITOR-RELOAD-001] Shader Reload only validates compile, no live swap
+- **What**: The Shader Reload panel's per-shader button re-invokes `Device::create_shader_from_msl` to confirm the source still compiles. It does NOT replace the active PSO bound on the live pipelines.
+- **Why now**: Hot-swap requires a stable shader-by-name registry the engine can use to find every PSO that referenced the old shader, then re-build each PSO with the new module. Today the demo creates each PSO inline with a captured shader pointer, so there's no central registry.
+- **Cost if left**: Reload doesn't actually let you edit a shader and see the change without restarting the demo.
+- **Fix path**: M23.b. Introduce `engine/renderer/shader_registry/` with `{name → Shader*}` and `{shader_name → [pso_name]}` indexes. Reload swaps the shader, walks the index, rebuilds dependent PSOs, atomically replaces them.
+- **Owner**: editor + renderer
+- **Created**: 2026-05-12
+
+### [P2-EDITOR-FONTS-VENDOR-001] Editor depends on macOS system fonts
+- **What**: The editor loads SF Pro + SF Mono from `/System/Library/Fonts/`. Works perfectly on macOS but doesn't survive to the iOS / Vulkan / DX12 backends planned for Phase 4.
+- **Why now**: Vendoring Inter + JetBrains Mono adds ~600 KB of TTFs to the repo and a FetchContent step. Not urgent on a macOS-only Phase 2.
+- **Cost if left**: A cross-platform build either has to vendor TTFs or stub the editor.
+- **Fix path**: FetchContent Inter + JBM from upstream GitHub releases. Or embed via `binary_to_compressed_c` so the TTFs ship inside the binary.
+- **Owner**: editor
+- **Created**: 2026-05-12
+
 ### [P1-SKIN-RT-001] Skinned tube is invisible to RT shadows + reflections
 - **What**: M16's skinned tube renders through the deferred path but isn't in the TLAS. It gets no ray-traced shadow on the ground and isn't reflected by metallic spheres. CSM also doesn't include it (no entry in the shadow pass).
 - **Why now**: TLAS is static (P1-RT-STATIC-TLAS-001). Adding skinned geometry requires per-frame TLAS refit so the BVH tracks the deformation.

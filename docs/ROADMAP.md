@@ -195,11 +195,35 @@ Phase 1.5 ships: compute pipelines + GPU particles (M12) → inline RT shadows +
   - [—] **Bottom dock panels** (Console, Profiler, FrameGraph view, Render Settings, Shader Reload) — M20.
   - [—] **Live shader reload + cvars** — M21.
   - [—] **Input system (camera nav, gizmos)** — M23.
-- [ ] M19 — Outliner + Inspector
-- [ ] M20 — Bottom dock panels
-- [ ] M21 — Live shader reload + cvars
-- [ ] M22 — Frame capture viewer
-- [ ] M23 — Input system (camera nav + gizmos)
+- [x] **M19 — Real fonts + Outliner + Inspector**
+  - [x] **M19a — SF Pro + SF Mono TTFs** loaded from `/System/Library/Fonts/`. Atlas at `logical × dpi`, `FontGlobalScale = 1/dpi` for crisp subpixel text on Retina (canonical ImGui Retina trick). `ScopedMonoFont` helper for data readouts.
+  - [x] **M19b — Outliner tree** with real scene contents (`procedural_demo` → 5 spheres / cube field / particle emitter / skinned tube / sun / camera). Selection: 2 px amber inset stripe + amber-tinted bg + label color. Tree rows draw label + badge chip via `ImDrawList::AddText` so they don't fight the layout cursor.
+  - [x] **M19b — Inspector for spheres** — hero (circular albedo swatch + name + `k_spheres[i]` path), TRANSFORM (read-only position), MATERIAL (`ColorEdit3` albedo + styled metallic / roughness / AO sliders). Mutations flow back into `k_spheres` via `SphereView` pointers — next frame's instance buffer picks them up.
+  - [—] **Camera / Sun / Particle / Tube inspectors** — deferred to M19c. Lower priority since their state already surfaces in Render Settings / status bar.
+  - **Bugs found + fixed on the way**: `fg_execute` label leak (`sphere_views` died before `fg.execute` — hoisted to render_fn scope), click swallowed by `AllowOverlap` (dropped the flag), mouse position mismatch on Retina (canonical refactor: `DisplaySize = logical pts`, `DisplayFramebufferScale = (dpi, dpi)` so input + widget bboxes share a coordinate space).
+- [x] **M20 — Bottom dock panels (Console / Profiler / Render Settings)**
+  - [x] **Console** — scrollable monospace lines with level colors (info/warn/err). Static placeholder data; M24 will route `mge::core::Logger` here.
+  - [x] **Profiler bar chart** — every `mge::profile` zone with LAST + AVG columns and a horizontal bar showing last-frame fill (`acc_bg_2` with amber tick at the fill edge) + `fg_4` tick for the rolling average. Scale auto-fits to `max(zones)` floored to a 5 ms budget hint.
+  - [x] **Render Settings (FEATURES)** — Checkboxes for `editor`, `rt`, `hzb`, `overlay`, `demo cycle`. Toggles wired through `EngineState bool*` pointers; the demo flips `a.demo_mode` live as proof.
+  - [x] Same `ScopedMonoFont` lifetime rule that bit `readout` in M19a hit the Console panel — inner-block scope keeps Push/Pop balanced inside `BeginChild`.
+- [x] **M21 — Mutable lighting cvars + live sliders**
+  - [x] **`DemoCvars` struct** owns sun yaw/pitch, sun color, ambient color, shadow bias, reflection strength. `fill_lighting_constants` reads from it each frame instead of hardcoded literals.
+  - [x] **SUN / AMBIENT / RT sections** in the Render Settings panel — yaw + pitch radians sliders (sun shadows track in real time), HDR color picker for sun, LDR for ambient, 0..1 slider for reflection strength, 0.0001..0.02 for shadow bias.
+  - [—] **Bloom / exposure / particle emitter sliders** — deferred to M21.b, needs exposing more demo uniforms as cvars.
+- [x] **M22 — FrameGraph view**
+  - [x] **`const FrameGraph*` plumbed through `EngineState`**. FG already exposes `pass(idx)` / `num_passes()` / `schedule()` / `resource_name(handle)` — no new accessors needed.
+  - [x] **Pass list panel (left, ≈360 px)** — monospace rows with R / W counts. Selectable.
+  - [x] **Detail pane (right)** — READS / WRITES / DEPTH blocks for the selected pass with `ResourceUsage` decoded to a short string (`color`, `depth`, `read`, `write`, `copy.src`, `copy.dst`).
+  - [x] Live updates with the running demo — every frame's 17-pass schedule (shadow → gbuffer → skin → hzb.build → hzb.stats → lighting → bloom.bright → bloom.ds×4 → bloom.us×4 → tonemap → particles → overlay → editor) walks correctly.
+- [x] **M23 — Shader Reload panel**
+  - [x] **`ShaderEntry[]` + `reload_shader` callback** on `EngineState`. The demo registers all 14 inline MSL sources with their entry-point labels and a C function-pointer reload hook that re-invokes `Device::create_shader_from_msl` as a compile sanity check.
+  - [x] **Per-row layout** — name (28 ch), entry-point (19 ch), `OK` / `ERR` badge in `ok` / `err` palette colors, amber-text "Reload" button.
+  - [—] **Live pipeline hot-swap** — deferred to M23.b. Today the reload only re-validates the MSL compile; replacing the live PSOs requires either a stable PSO-by-name registry or a file-watcher feeding source edits.
+- [ ] **M24 — Console wired to mge::core::Logger + cvar registry** (Phase 2.b polish)
+
+## Phase 2 — Closeout
+
+Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Design system applied (`#E8A24A` amber accent, slate palette, JetBrains-Mono-style numeric readouts via SF Mono), the design's exact layout (menubar / toolbar / outliner / viewport / inspector / 5-tab bottom dock / status bar), and every tab live. The demo renders deferred PBR + RT + HZB + particles + LOD + compute skinning at 120 FPS on M1 Pro with the editor on — sun direction, ambient, reflection strength, shadow bias all tweakable from the Render Settings tab, scene contents browsable in the Outliner, sphere materials editable in the Inspector, FrameGraph schedule + per-pass reads/writes inspectable, shader recompile sanity-checked from the Shader Reload tab. 6 milestones M18→M23, 1 ADR (0014), 82 tests green throughout. Design handoff bundle stays local at `notes/design_drop/` (gitignored) as the single source of truth for tokens.
 
 ## Phase 3 — Systems (was Phase 2)
 
