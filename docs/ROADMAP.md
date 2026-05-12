@@ -70,11 +70,16 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [—] **Multiscatter compensation** (deferred — single-scattering GGX visible loss only at extreme roughness; Fdez-Agüera at M6.1)
   - [—] **IBL** (irradiance + prefiltered specular + BRDF LUT) — deferred to M6.1, needs compute pipeline + HDR env map loader
   - [—] **Furnace test** (deferred to M9 with perceptual diff harness)
-- [ ] **M7 — CSM shadows**
-  - [ ] 4-cascade CSM
-  - [ ] PCF 3×3 filtering
-  - [ ] Stable texel snap
-  - [ ] Golden: shadow scene
+- [x] **M7 — Shadow mapping (single cascade)**
+  - [x] `engine/math::orthographic_rh_zo` (Metal NDC z[0,1])
+  - [x] `engine/assets::make_ground_plane_pbr` so shadows have something to fall on
+  - [x] **RHI**: `RenderPipelineDesc::fragment_shader` is now optional → depth-only shadow pipeline (no color targets, no fragment function)
+  - [x] **Shadow pass**: 2048×2048 Depth32Float transient, depth-only render from sun's POV with front-face cull to mitigate self-shadow acne
+  - [x] **Lighting pass**: samples shadow map with PCF 3×3 + bias, attenuates direct lighting
+  - [x] Demo: 5 spheres + ground plane casting visible soft shadows
+  - [—] **4-cascade CSM** (deferred to M7.b — single cascade is sufficient for the demo scene; multi-cascade lands when scene size grows)
+  - [—] **Stable texel snap** (deferred with cascades — only matters when camera moves cascades around)
+  - [—] **Golden: shadow scene** (deferred to M9 with perceptual diff harness)
 - [ ] **M8 — Culling + instancing**
   - [ ] CPU frustum cull (NEON SoA)
   - [ ] GPU instancing via `MTLIndirectCommandBuffer`

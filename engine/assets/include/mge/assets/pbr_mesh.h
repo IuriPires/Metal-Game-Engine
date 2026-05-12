@@ -34,4 +34,9 @@ struct PbrMesh {
 // have the smoothing artifacts of low-poly spheres.
 [[nodiscard]] PbrMesh make_cube_pbr() noexcept;
 
+// Flat quad in the XZ plane at y=0, with normal=+Y. `half_extent` is the
+// distance from origin to each edge along X and Z. Used as a ground plane
+// for shadow tests.
+[[nodiscard]] PbrMesh make_ground_plane_pbr(float half_extent = 10.0f) noexcept;
+
 }  // namespace mge::assets

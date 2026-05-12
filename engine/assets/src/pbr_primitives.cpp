@@ -45,6 +45,20 @@ PbrMesh make_sphere_pbr(std::uint32_t lat_segs, std::uint32_t lon_segs) noexcept
     return m;
 }
 
+PbrMesh make_ground_plane_pbr(float half_extent) noexcept {
+    PbrMesh m;
+    const math::Vec3 n{0, 1, 0};
+    m.vertices = {
+        PbrVertex{math::Vec3{-half_extent, 0, -half_extent}, n},
+        PbrVertex{math::Vec3{ half_extent, 0, -half_extent}, n},
+        PbrVertex{math::Vec3{ half_extent, 0,  half_extent}, n},
+        PbrVertex{math::Vec3{-half_extent, 0,  half_extent}, n},
+    };
+    // CCW outward (camera above looks down at +Y plane).
+    m.indices = {0, 2, 1, 0, 3, 2};
+    return m;
+}
+
 PbrMesh make_cube_pbr() noexcept {
     PbrMesh m;
     struct Face {

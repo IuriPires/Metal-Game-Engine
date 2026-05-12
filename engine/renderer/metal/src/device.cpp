@@ -160,26 +160,36 @@ std::unique_ptr<Shader> Device::create_shader_from_msl(const ShaderSourceDesc& d
 std::unique_ptr<RenderPipeline> Device::create_render_pipeline(const RenderPipelineDesc& desc) {
     auto* dev = static_cast<MTL::Device*>(native_);
 
-    if (desc.vertex_shader == nullptr || desc.fragment_shader == nullptr) {
+    if (desc.vertex_shader == nullptr) {
         return nullptr;
     }
 
     auto* vlib = static_cast<MTL::Library*>(desc.vertex_shader->native());
-    auto* flib = static_cast<MTL::Library*>(desc.fragment_shader->native());
-
     MTL::Function* vfn = vlib->newFunction(mb::ns_str(desc.vertex_entry));
-    MTL::Function* ffn = flib->newFunction(mb::ns_str(desc.fragment_entry));
-    if (vfn == nullptr || ffn == nullptr) {
-        if (vfn) vfn->release();
-        if (ffn) ffn->release();
-        std::fprintf(stderr, "[rhi/metal] missing function: vs=%s fs=%s\n",
-                     desc.vertex_entry.c_str(), desc.fragment_entry.c_str());
+    if (vfn == nullptr) {
+        std::fprintf(stderr, "[rhi/metal] missing vertex function: %s\n",
+                     desc.vertex_entry.c_str());
         return nullptr;
+    }
+
+    // Depth-only passes (e.g. shadow mapping) skip the fragment stage.
+    MTL::Function* ffn = nullptr;
+    if (desc.fragment_shader != nullptr) {
+        auto* flib = static_cast<MTL::Library*>(desc.fragment_shader->native());
+        ffn = flib->newFunction(mb::ns_str(desc.fragment_entry));
+        if (ffn == nullptr) {
+            vfn->release();
+            std::fprintf(stderr, "[rhi/metal] missing fragment function: %s\n",
+                         desc.fragment_entry.c_str());
+            return nullptr;
+        }
     }
 
     MTL::RenderPipelineDescriptor* pd = MTL::RenderPipelineDescriptor::alloc()->init();
     pd->setVertexFunction(vfn);
-    pd->setFragmentFunction(ffn);
+    if (ffn != nullptr) {
+        pd->setFragmentFunction(ffn);
+    }
 
     for (std::uint32_t i = 0; i < desc.num_color_targets; ++i) {
         MTL::RenderPipelineColorAttachmentDescriptor* ca =
@@ -220,7 +230,9 @@ std::unique_ptr<RenderPipeline> Device::create_render_pipeline(const RenderPipel
     MTL::RenderPipelineState* pso = dev->newRenderPipelineState(pd, &err);
     pd->release();
     vfn->release();
-    ffn->release();
+    if (ffn != nullptr) {
+        ffn->release();
+    }
 
     if (pso == nullptr) {
         if (err != nullptr) {

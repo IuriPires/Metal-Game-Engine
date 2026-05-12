@@ -165,6 +165,22 @@ struct alignas(16) Mat4 {
     return m;
 }
 
+// Right-handed orthographic projection mapping NDC z into [0, 1] (Metal /
+// Vulkan / D3D convention). Used for directional shadow map projections and
+// 2D pipelines.
+[[nodiscard]] inline Mat4 orthographic_rh_zo(float l, float r, float b, float t,
+                                              float zn, float zf) noexcept {
+    Mat4 m;
+    m.cols[0] = Vec4{2.0f / (r - l), 0, 0, 0};
+    m.cols[1] = Vec4{0, 2.0f / (t - b), 0, 0};
+    m.cols[2] = Vec4{0, 0, 1.0f / (zn - zf), 0};
+    m.cols[3] = Vec4{-(r + l) / (r - l),
+                     -(t + b) / (t - b),
+                     zn / (zn - zf),
+                     1.0f};
+    return m;
+}
+
 // Right-handed perspective projection mapping NDC z into [0, 1] (Metal /
 // Vulkan / D3D convention). Useful for reverse-Z (call with swapped near/far).
 [[nodiscard]] inline Mat4 perspective_rh_zo(float fovy_rad, float aspect, float zn,

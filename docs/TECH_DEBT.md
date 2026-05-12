@@ -118,6 +118,24 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer
 - **Created**: 2026-05-12
 
+## New debt opened in M7
+
+### [P1-SHADOW-CASCADES-001] Single shadow cascade only
+- **What**: M7 ships one big 2048×2048 shadow map covering the whole demo scene. No frustum splitting, no per-cascade resolution scaling. Quality at far depths is poor for scenes bigger than the current demo.
+- **Why now**: Single-cascade gets the architecture in place (depth-only pipeline, shadow sampling, PCF). Multi-cascade is a follow-on with no fresh architectural risk.
+- **Cost if left**: Visible shadow blockiness at far distances; cannot scale to Sponza-class scenes.
+- **Fix path**: M7.b — split view frustum into 4 depth slices, compute per-cascade ortho matrices covering each slice's world AABB in light space, snap to texel grid for stability, multi-sample in the lighting fs.
+- **Owner**: renderer/shadows
+- **Created**: 2026-05-12
+
+### [P1-SHADOW-BIAS-001] Fixed depth bias
+- **What**: Shadow bias is a hard-coded 0.0015 constant. No slope-scale bias, no normal offset.
+- **Why now**: Works for the demo scene's lighting angle.
+- **Cost if left**: Shadow acne or peter-panning visible at grazing angles or with shallow lights.
+- **Fix path**: Add slope-scale bias (function of N · L) and/or normal offset. ~10 lines in the shader.
+- **Owner**: renderer/shadows
+- **Created**: 2026-05-12
+
 ### [P1-FG-STORE-001] write_depth defaulted to DontCare — RESOLVED (M6, 2026-05-12)
 - **What was wrong**: `PassBuilder::write_depth` set `store_action = DontCare`. M6's deferred lighting pass samples the gbuffer's depth as a shader resource. With DontCare, the depth contents weren't preserved past the gbuffer pass → garbage values → broken world position reconstruction → V/H/NoV/VoH wrong → near-black PBR output.
 - **Fix**: default to `StoreAction::Store` in `PassBuilder::write_depth`.
