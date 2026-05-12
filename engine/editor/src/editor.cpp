@@ -55,6 +55,20 @@ void Editor::render(const EngineState& state, rhi::RenderEncoder& enc,
                          color_texture_native,
                          /*depth_texture=*/nullptr);
     ImGui::NewFrame();
+
+    // M19b — DPI mouse fix. ImGui_ImplOSX feeds mouse position from NSEvent
+    // locationInWindow, which is in NSWindow points (logical pixels). Our
+    // DisplaySize is in physical pixels (drawable_width × drawable_height)
+    // so widget bounding boxes live in physical space. Multiply the
+    // post-NewFrame mouse position by dpi_scale so the two systems agree:
+    // arrow-key navigation already worked because it doesn't use MousePos;
+    // mouse clicks fell halfway up the panel and missed the rows.
+    ImGuiIO& io = ImGui::GetIO();
+    if (current_dpi_scale() > 1.001f && io.MousePos.x != -FLT_MAX) {
+        io.MousePos.x *= current_dpi_scale();
+        io.MousePos.y *= current_dpi_scale();
+    }
+
     draw_chrome(state, selection_);
     ImGui::Render();
     platform::render_into_encoder(command_buffer_native, enc.native());
