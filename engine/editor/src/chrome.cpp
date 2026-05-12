@@ -747,11 +747,58 @@ void draw_render_settings_panel(const EngineState& state) {
         toggle_row("demo cycle", state.demo_mode);
     }
 
-    section("RENDER", &render_open);
+    section("SUN", &render_open);
     if (render_open) {
-        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-        ImGui::TextWrapped("Sliders for sun / bloom / exposure / ambient land in M21 once the engine cvars are exposed mutably.");
-        ImGui::PopStyleColor();
+        if (state.sun_yaw) {
+            prop_row_begin("yaw");
+            styled_slider("##yaw", state.sun_yaw,
+                           -3.14159f, 3.14159f, "%.3f rad");
+            prop_row_end();
+        }
+        if (state.sun_pitch) {
+            prop_row_begin("pitch");
+            styled_slider("##pitch", state.sun_pitch,
+                           -1.5707f, -0.05f, "%.3f rad");
+            prop_row_end();
+        }
+        if (state.sun_color) {
+            prop_row_begin("color");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::ColorEdit3("##suncol", state.sun_color,
+                                ImGuiColorEditFlags_HDR |
+                                ImGuiColorEditFlags_Float |
+                                ImGuiColorEditFlags_NoInputs);
+            prop_row_end();
+        }
+    }
+
+    static bool ambient_open    = true;
+    static bool rt_section_open = true;
+
+    section("AMBIENT", &ambient_open);
+    if (ambient_open && state.ambient) {
+        prop_row_begin("color");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::ColorEdit3("##amb", state.ambient,
+                            ImGuiColorEditFlags_Float |
+                            ImGuiColorEditFlags_NoInputs);
+        prop_row_end();
+    }
+
+    section("RT", &rt_section_open);
+    if (rt_section_open) {
+        if (state.reflection_strength) {
+            prop_row_begin("reflection");
+            styled_slider("##refl", state.reflection_strength,
+                           0.0f, 1.0f, "%.2f");
+            prop_row_end();
+        }
+        if (state.shadow_bias) {
+            prop_row_begin("shadow bias");
+            styled_slider("##bias", state.shadow_bias,
+                           0.0001f, 0.02f, "%.4f");
+            prop_row_end();
+        }
     }
 
     ImGui::EndChild();

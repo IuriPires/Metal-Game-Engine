@@ -96,6 +96,15 @@ struct EngineState {
 
     // Static metadata for the Outliner.
     std::uint32_t tube_bone_count = 0;
+
+    // M21 — mutable lighting cvars. Render Settings sliders write through
+    // these pointers. Slider ranges live in the editor (chrome.cpp).
+    float* sun_yaw            = nullptr;
+    float* sun_pitch          = nullptr;
+    float* sun_color          = nullptr;   // 3 floats
+    float* ambient            = nullptr;   // 3 floats
+    float* shadow_bias        = nullptr;
+    float* reflection_strength = nullptr;
 };
 
 class Editor {

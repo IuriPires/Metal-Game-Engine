@@ -2040,9 +2040,34 @@ mge::math::Mat4 compute_light_view_proj(mge::math::Vec3 sun_dir_ws) {
     return proj * view;
 }
 
+// M21 — mutable cvars shared between the demo and the editor's Render
+// Settings panel. The editor writes through pointers it stores in
+// EngineState; the next frame's fill_lighting_constants picks the changes
+// up before encoding the lighting pass.
+struct DemoCvars {
+    // Sun direction in spherical coords (radians) — easier to slider than
+    // a raw Vec3. Converted to a unit world-space vector when bound.
+    float sun_yaw            = -2.20f;   // -2.20 ≈ original {-0.6, -, -0.4}
+    float sun_pitch          = -1.08f;   // -1.08 ≈ original .y=-1.0
+    float sun_color[3]       = {3.20f, 3.00f, 2.60f};
+    float ambient[3]         = {0.12f, 0.14f, 0.18f};
+    float shadow_bias        = 0.0015f;
+    float reflection_strength = 0.65f;
+};
+
+[[nodiscard]] inline mge::math::Vec3 sun_dir_from_cvars(const DemoCvars& c) {
+    const float cp = std::cos(c.sun_pitch);
+    return mge::math::Vec3{
+        std::cos(c.sun_yaw) * cp,
+        std::sin(c.sun_pitch),
+        std::sin(c.sun_yaw) * cp,
+    };
+}
+
 void fill_lighting_constants(DeferredRenderer& r, const mge::scene::Camera& cam,
                               const mge::math::Mat4& light_vp,
-                              const mge::math::Vec3& sun_dir) {
+                              const mge::math::Vec3& sun_dir,
+                              const DemoCvars& cvars) {
     LightingConstants u{};
     u.view_proj_inv   = mge::math::inverse(cam.view_projection());
     u.light_view_proj = light_vp;
@@ -2054,17 +2079,17 @@ void fill_lighting_constants(DeferredRenderer& r, const mge::scene::Camera& cam,
     u.sun_dir_ws[1]   = sun_dir.y;
     u.sun_dir_ws[2]   = sun_dir.z;
     u.sun_dir_ws[3]   = 1.0f;
-    u.sun_color[0]    = 3.2f;
-    u.sun_color[1]    = 3.0f;
-    u.sun_color[2]    = 2.6f;
+    u.sun_color[0]    = cvars.sun_color[0];
+    u.sun_color[1]    = cvars.sun_color[1];
+    u.sun_color[2]    = cvars.sun_color[2];
     u.sun_color[3]    = 1.0f;
-    u.ambient[0]      = 0.12f;
-    u.ambient[1]      = 0.14f;
-    u.ambient[2]      = 0.18f;
+    u.ambient[0]      = cvars.ambient[0];
+    u.ambient[1]      = cvars.ambient[1];
+    u.ambient[2]      = cvars.ambient[2];
     u.ambient[3]      = 0.0f;
     u.shadow_params[0] = 1.0f / static_cast<float>(k_shadow_size);
-    u.shadow_params[1] = 0.0015f;                                 // RT bias / CSM legacy
-    u.shadow_params[2] = 0.65f;                                   // RT reflection strength
+    u.shadow_params[1] = cvars.shadow_bias;
+    u.shadow_params[2] = cvars.reflection_strength;
     u.shadow_params[3] = 0.0f;
     std::memcpy(r.lighting_buf->contents(), &u, sizeof(u));
 }
@@ -2167,8 +2192,10 @@ int run_windowed(Args a) {
 
     FrameGraph fg(*r->device);
 
-    const mge::math::Vec3 sun_dir = mge::math::normalize(mge::math::Vec3{-0.6f, -1.0f, -0.4f});
-    const mge::math::Mat4 light_vp = compute_light_view_proj(sun_dir);
+    DemoCvars cvars{};
+    // light_vp + sun_dir get rebuilt per-frame inside render_fn from cvars.
+    mge::math::Vec3 sun_dir = sun_dir_from_cvars(cvars);
+    mge::math::Mat4 light_vp = compute_light_view_proj(sun_dir);
 
     std::vector<std::uint32_t> visible_cubes;
     visible_cubes.reserve(cubes_proto.size());
@@ -2349,7 +2376,11 @@ int run_windowed(Args a) {
         fc.light_view_proj = light_vp;
         std::memcpy(r->frame_buf->contents(), &fc, sizeof(fc));
 
-        fill_lighting_constants(*r, camera, light_vp, sun_dir);
+        // Per-frame: re-derive sun direction + light VP from the editable
+        // cvars so Render Settings sliders flow into the lighting buffer.
+        sun_dir  = mge::math::normalize(sun_dir_from_cvars(cvars));
+        light_vp = compute_light_view_proj(sun_dir);
+        fill_lighting_constants(*r, camera, light_vp, sun_dir, cvars);
 
         cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
         }  // end of fill_instances profile zone
@@ -2932,6 +2963,13 @@ int run_windowed(Args a) {
             es.overlay_enabled  = nullptr;   // a.no_overlay forced when --editor
             es.demo_mode        = &a.demo_mode;
             // hzb_enabled is hardcoded on; expose when we wire a runtime toggle.
+
+            es.sun_yaw            = &cvars.sun_yaw;
+            es.sun_pitch          = &cvars.sun_pitch;
+            es.sun_color          = cvars.sun_color;
+            es.ambient            = cvars.ambient;
+            es.shadow_bias        = &cvars.shadow_bias;
+            es.reflection_strength = &cvars.reflection_strength;
 
             // Profiler snapshot — same data the M11 overlay used. Capture once
             // so the editor sees the latest zones without re-querying.
