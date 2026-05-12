@@ -13,6 +13,7 @@ add_subdirectory(profile)
 if(APPLE)
     add_subdirectory(renderer)
     add_subdirectory(platform)
+    add_subdirectory(editor)
 endif()
 
 # Future (added per milestone):

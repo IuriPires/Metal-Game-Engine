@@ -111,6 +111,51 @@ FetchContent_Declare(tracy
 # FetchContent_MakeAvailable(tracy)  # enable at M2 once Tracy::Client target exists
 
 # -----------------------------------------------------------------------------
+# Dear ImGui — immediate-mode UI for the editor
+#   Consumed by: M18 (editor foundation), ADR-0014
+#
+# Pull the docking branch — multi-viewport + dockable panels match the design.
+# We ship the upstream Metal + OSX impls (.mm) at the platform edge (same
+# precedent as window.mm; see ADR-0001).
+# -----------------------------------------------------------------------------
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        docking
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(imgui)
+
+if(APPLE AND NOT TARGET imgui::imgui)
+    set(IMGUI_DIR ${imgui_SOURCE_DIR})
+    add_library(imgui STATIC
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_demo.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_metal.mm
+        ${IMGUI_DIR}/backends/imgui_impl_osx.mm
+    )
+    target_include_directories(imgui SYSTEM PUBLIC
+        ${IMGUI_DIR}
+        ${IMGUI_DIR}/backends
+    )
+    target_compile_features(imgui PUBLIC cxx_std_17)
+    target_compile_options(imgui PRIVATE
+        -Wno-deprecated-declarations
+        -Wno-old-style-cast
+        -fobjc-arc
+    )
+    target_link_libraries(imgui PUBLIC
+        "-framework Cocoa"
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework GameController"
+    )
+    add_library(imgui::imgui ALIAS imgui)
+endif()
+
+# -----------------------------------------------------------------------------
 # Aggregate interface for tests
 # -----------------------------------------------------------------------------
 add_library(mge_thirdparty INTERFACE)

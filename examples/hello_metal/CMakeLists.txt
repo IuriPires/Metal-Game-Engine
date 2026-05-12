@@ -18,6 +18,7 @@ target_link_libraries(hello_metal
         mge::math
         mge::core
         mge::profile
+        mge::editor
         mge_warnings
         mge_sanitizers
 )

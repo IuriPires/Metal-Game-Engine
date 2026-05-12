@@ -22,6 +22,7 @@
 #include "mge/core/game_loop.h"
 #include "mge/core/time.h"
 #include "mge/core/version.h"
+#include "mge/editor/editor.h"
 #include "mge/frame_graph/frame_graph.h"
 #include "mge/math/aabb.h"
 #include "mge/math/frustum.h"
@@ -176,6 +177,7 @@ struct Args {
     bool          no_overlay = false;  // disable profiling overlay
     bool          no_rt      = false;  // disable RT shadows + reflections (fall back to CSM)
     int           force_lod  = -1;     // -1 = auto (distance), 0/1/2 = forced level
+    bool          editor     = false;  // M18: ImGui editor chrome on top of the demo
 };
 
 Args parse_args(int argc, char** argv) {
@@ -207,6 +209,8 @@ Args parse_args(int argc, char** argv) {
             a.no_overlay = true;
         } else if (s == "--no-rt") {
             a.no_rt = true;
+        } else if (s == "--editor") {
+            a.editor = true;
         } else if (s == "--force-lod" && i + 1 < argc) {
             a.force_lod = std::atoi(argv[++i]);
             if (a.force_lod < 0 ||
@@ -2117,6 +2121,15 @@ int run_windowed(const Args& a) {
     auto swap = r->device->create_swapchain(window.native_layer(), backbuffer_fmt);
     if (!swap) { std::fprintf(stderr, "swapchain init failed\n"); return 1; }
 
+    // M18: optional ImGui-driven editor chrome. Lives in its own FG pass that
+    // runs after `overlay`, before present, on the same backbuffer.
+    std::unique_ptr<mge::editor::Editor> editor;
+    if (a.editor) {
+        editor = mge::editor::Editor::create(*r->device, window.native_window(),
+                                               backbuffer_fmt);
+        std::printf("[hello_metal] editor: %s\n", editor ? "on" : "init failed");
+    }
+
     auto sync_drawable_size = [&]() {
         const std::uint32_t w = window.drawable_width();
         const std::uint32_t h = window.drawable_height();
@@ -2861,6 +2874,39 @@ int run_windowed(const Args& a) {
                     enc.set_fragment_texture(*r->font_atlas,     0);
                     enc.set_fragment_sampler(*r->overlay_sampler, 0);
                     enc.draw(6, draw_count);
+                });
+        }
+
+        // M18 — editor chrome over everything. ImGui-driven; lives in its own
+        // pass so it can be toggled at runtime without disturbing the rest of
+        // the FrameGraph.
+        if (editor && editor->visible()) {
+            const std::uint32_t fw_now = fw;
+            const std::uint32_t fh_now = fh;
+            mge::editor::EngineState es{};
+            es.fps_now  = stats.last_seconds() > 0.0
+                ? static_cast<float>(1.0 / stats.last_seconds()) : 0.0f;
+            es.ms_last  = static_cast<float>(stats.last_seconds() * 1000.0);
+            es.ms_avg   = static_cast<float>(stats.avg_seconds() * 1000.0);
+            es.frame    = static_cast<std::uint64_t>(frame);
+            es.sim_time = loop.sim_time();
+            es.step_count       = loop.step_count();
+            es.cubes_total      = static_cast<std::uint32_t>(cubes_proto.size());
+            es.cubes_frustum_vis = cube_visible_count;
+            es.hzb_occluded     =
+                *static_cast<const std::uint32_t*>(r->hzb_counter_buf->contents());
+            es.particles        = k_particle_count;
+
+            fg.add_pass("editor",
+                [&](PassBuilder& pb) {
+                    pb.write_color(bb, LoadAction::Load, 0, 0, 0, 1);
+                },
+                [&editor, &bb, es, fw_now, fh_now](RenderContext& ctx) {
+                    auto rp = ctx.make_render_pass_desc();
+                    RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
+                    editor->render(es, enc, ctx.cmd().native(),
+                                    ctx.texture(bb).native(),
+                                    fw_now, fh_now);
                 });
         }
 

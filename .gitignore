@@ -96,3 +96,7 @@ refs/*.mobi
 # Cached Apple downloads (PDFs / zips are large; URLs + SHAs live in INDEX.md)
 external_docs/metal/*.pdf
 external_docs/metal/*.zip
+
+
+# Design handoffs from Claude Design (kept local; reference only, not source of truth)
+notes/design_drop/

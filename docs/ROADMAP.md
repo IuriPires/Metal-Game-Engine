@@ -183,7 +183,25 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
 
 Phase 1.5 ships: compute pipelines + GPU particles (M12) → inline RT shadows + metallic reflections (M13) → HZB occlusion build + stats (M14) → discrete LOD chain (M15) → skeletal animation (M16) → compute-driven skinning (M17). 13 ADRs, 82 tests green, 17 milestones across Phase 1 + 1.5, demo on M1 Pro renders deferred PBR + RT shadows + RT reflections + bloom + ACES + 32k GPU particles + LOD-batched spheres + compute-skinned tube + HZB stats + on-screen profiler overlay, locked to 120 FPS at 1080p.
 
-## Phase 2 — Systems
+## Phase 2 — Tooling (swapped with Systems per chat 2026-05-12)
+
+- [x] **M18 — Dear ImGui editor foundation + design system**
+  - [x] **Design handoff** ingested at `notes/design_drop/game-engine/` — 7 screens, component library, design tokens. Amber accent (`#E8A24A`) locked.
+  - [x] **ImGui (docking)** vendored via FetchContent; Metal + OSX backends compiled at the platform edge (ADR-0001 carve-out, ADR-0014 records this decision).
+  - [x] **`engine/editor/` module** — `Editor` + `EngineState` API. `apply_theme()` translates the design tokens straight into ImGuiStyle.
+  - [x] **FrameGraph integration** — single `editor` pass after `overlay`, `LoadAction::Load` on the backbuffer. Toggle via `--editor`.
+  - [x] **Chrome shell** — menubar, toolbar with readout pills, three-column workarea, bottom dock tab strip, status bar. M18 ships stateless chrome with placeholder panels; M19+ wire real content.
+  - [—] **Outliner + Inspector content** — M19.
+  - [—] **Bottom dock panels** (Console, Profiler, FrameGraph view, Render Settings, Shader Reload) — M20.
+  - [—] **Live shader reload + cvars** — M21.
+  - [—] **Input system (camera nav, gizmos)** — M23.
+- [ ] M19 — Outliner + Inspector
+- [ ] M20 — Bottom dock panels
+- [ ] M21 — Live shader reload + cvars
+- [ ] M22 — Frame capture viewer
+- [ ] M23 — Input system (camera nav + gizmos)
+
+## Phase 3 — Systems (was Phase 2)
 
 - [ ] ECS proper (archetype storage)
 - [ ] Full job system (work stealing, priorities)
@@ -191,13 +209,6 @@ Phase 1.5 ships: compute pipelines + GPU particles (M12) → inline RT shadows +
 - [ ] Audio (CoreAudio / OpenAL)
 - [ ] Scripting layer (TBD: Lua / Wren / native plug-ins)
 - [ ] Asset pipeline + cooked formats
-
-## Phase 3 — Tooling
-
-- [ ] Editor (Dear ImGui)
-- [ ] Frame capture viewer
-- [ ] Live shader reload UX
-- [ ] Live tweak / cvar system
 
 ## Phase 4 — Cross-platform backends
 

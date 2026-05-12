@@ -185,4 +185,8 @@ void* Window::native_layer() noexcept {
     return static_cast<void*>(impl_->layer);
 }
 
+void* Window::native_window() noexcept {
+    return static_cast<void*>(impl_->ns_window);
+}
+
 }  // namespace mge::platform

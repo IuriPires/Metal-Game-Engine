@@ -115,6 +115,7 @@ Never skip steps 1-4. The engine has to be defensible architecturally first.
 | Camera | `engine/renderer/camera/` | RENDERING_PIPELINE.md |
 | Assets (glTF, textures) | `engine/assets/` | ARCHITECTURE.md |
 | ECS stub | `engine/ecs/` | ARCHITECTURE.md |
+| Editor (ImGui) | `engine/editor/` | design_decisions/0014-imgui-editor.md |
 
 ## Sanity checks before declaring work "done"
 

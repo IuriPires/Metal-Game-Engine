@@ -43,6 +43,11 @@ public:
     // mge::rhi::Device::create_swapchain.
     [[nodiscard]] void* native_layer() noexcept;
 
+    // Native window pointer. On macOS this is an NSWindow*. Used by the
+    // editor's ImGui OSX backend to forward AppKit events. Other consumers
+    // should prefer native_layer().
+    [[nodiscard]] void* native_window() noexcept;
+
 private:
     struct Impl;
     Impl* impl_;
