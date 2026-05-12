@@ -17,6 +17,7 @@ add_executable(mge_unit_tests
     test_primitives.cpp
     test_pbr_primitives.cpp
     test_frustum.cpp
+    test_game_loop.cpp
 )
 
 target_link_libraries(mge_unit_tests

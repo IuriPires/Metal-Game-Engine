@@ -19,6 +19,7 @@
 //   --cubes N     grid side count for the instanced cube field (default 32 -> 1024 cubes)
 
 #include "mge/assets/pbr_mesh.h"
+#include "mge/core/game_loop.h"
 #include "mge/core/time.h"
 #include "mge/core/version.h"
 #include "mge/frame_graph/frame_graph.h"
@@ -43,11 +44,16 @@
 namespace {
 
 struct Args {
-    int           frames    = 0;
-    bool          headless  = false;
-    std::uint32_t width     = 1280;
-    std::uint32_t height    = 720;
-    std::uint32_t cube_side = 32;  // total cubes = side * side
+    int           frames     = 0;
+    bool          headless   = false;
+    std::uint32_t width      = 1280;
+    std::uint32_t height     = 720;
+    std::uint32_t cube_side  = 32;
+    float         time_scale = 1.0f;
+    float         target_fps = 120.0f;
+    float         sim_hz     = 60.0f;
+    bool          paused     = false;
+    bool          demo_mode  = false;  // cycle pause/slowmo/fast-fwd for visual demo
 };
 
 Args parse_args(int argc, char** argv) {
@@ -65,6 +71,16 @@ Args parse_args(int argc, char** argv) {
         } else if (s == "--cubes" && i + 1 < argc) {
             const int n = std::atoi(argv[++i]);
             a.cube_side = static_cast<std::uint32_t>(n > 0 ? n : 1);
+        } else if (s == "--time-scale" && i + 1 < argc) {
+            a.time_scale = static_cast<float>(std::atof(argv[++i]));
+        } else if (s == "--target-fps" && i + 1 < argc) {
+            a.target_fps = static_cast<float>(std::atof(argv[++i]));
+        } else if (s == "--sim-hz" && i + 1 < argc) {
+            a.sim_hz = static_cast<float>(std::atof(argv[++i]));
+        } else if (s == "--paused") {
+            a.paused = true;
+        } else if (s == "--demo-mode") {
+            a.demo_mode = true;
         }
     }
     return a;
@@ -878,6 +894,25 @@ int run_windowed(const Args& a) {
     std::vector<std::uint32_t> visible_cubes;
     visible_cubes.reserve(cubes_proto.size());
 
+    // GameLoop: fixed-timestep sim (60 Hz default) + decoupled render with
+    // pacing. The cube wobble advances in the sim callback; the render
+    // callback interpolates with `alpha` for smooth visuals between steps.
+    mge::core::GameLoop loop;
+    loop.set_fixed_dt(1.0f / a.sim_hz);
+    loop.set_target_fps(a.target_fps);
+    loop.set_time_scale(a.time_scale);
+    loop.set_paused(a.paused);
+
+    std::printf("[hello_metal] loop: sim %.0fHz, target %.0ffps, scale %.2f%s%s\n",
+                static_cast<double>(a.sim_hz),
+                static_cast<double>(a.target_fps),
+                static_cast<double>(a.time_scale),
+                a.paused ? " [paused]" : "",
+                a.demo_mode ? " [demo cycle]" : "");
+
+    float         sim_yaw            = 0.0f;  // accumulated by sim_fn
+    std::uint32_t cube_visible_count = 0;     // updated by render_fn
+
     mge::core::FrameStats stats;
     auto                  prev   = mge::core::now();
     auto                  origin = mge::core::now();
@@ -892,11 +927,32 @@ int run_windowed(const Args& a) {
                               static_cast<float>(window.drawable_height()));
         }
 
-        auto frame_drawable = swap->acquire_frame();
-        if (!frame_drawable.valid()) continue;
+        // Demo mode cycles through (normal, paused, slow-mo, fast-fwd) every
+        // ~3 seconds of wall time so you can visually confirm each state.
+        if (a.demo_mode) {
+            const double wall   = mge::core::seconds(mge::core::now() - origin);
+            const double phase  = std::fmod(wall, 12.0);
+            if (phase < 3.0)        { loop.set_paused(false); loop.set_time_scale(1.0f); }
+            else if (phase < 5.0)   { loop.set_paused(true);  loop.set_time_scale(1.0f); }
+            else if (phase < 8.0)   { loop.set_paused(false); loop.set_time_scale(0.25f); }
+            else                    { loop.set_paused(false); loop.set_time_scale(3.0f); }
+        }
 
-        const float t       = static_cast<float>(mge::core::seconds(mge::core::now() - origin));
-        const mge::math::Mat4 wobble = mge::math::rotation_y(t * 0.4f);
+        const auto sim_fn = [&](float dt) {
+            sim_yaw += dt * 0.4f;
+        };
+
+        bool rendered = false;
+        const auto render_fn = [&](float alpha) {
+            auto frame_drawable = swap->acquire_frame();
+            if (!frame_drawable.valid()) return;
+            rendered = true;
+
+        // Interpolated wobble: where the sim WILL be `alpha` of the way to
+        // the next step. Zero when paused (loop.last_alpha() forces 0).
+        const float interp_yaw = sim_yaw + alpha * loop.fixed_dt() * 0.4f;
+        const mge::math::Mat4 wobble = mge::math::rotation_y(interp_yaw);
+        // (Render body continues below - reuses `wobble`, `frame_drawable`, etc.)
 
         // Build the per-frame instance buffer.
         auto* instances = static_cast<InstanceData*>(r->instance_buf->contents());
@@ -955,7 +1011,7 @@ int run_windowed(const Args& a) {
 
         fill_lighting_constants(*r, camera, light_vp, sun_dir);
 
-        const std::uint32_t cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
+        cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
 
         fg.reset();
         const std::uint32_t fw = frame_drawable.texture()->width();
@@ -1155,11 +1211,16 @@ int run_windowed(const Args& a) {
                 enc.draw(3);
             });
 
-        if (!fg.compile()) {
-            std::fprintf(stderr, "frame graph compile failed\n");
-            return 1;
-        }
-        fg.execute(*r->queue, &frame_drawable);
+            if (!fg.compile()) {
+                std::fprintf(stderr, "frame graph compile failed\n");
+                return;
+            }
+            fg.execute(*r->queue, &frame_drawable);
+        };  // render_fn
+
+        loop.tick(sim_fn, render_fn);
+
+        if (!rendered) continue;  // no drawable this iteration
 
         const auto now = mge::core::now();
         const auto dt  = now - prev;
@@ -1168,11 +1229,18 @@ int run_windowed(const Args& a) {
 
         ++frame;
         if (frame % 60 == 0) {
-            std::printf("[hello_metal] frame %4d  last=%.2fms  avg=%.2fms  cubes %u/%zu\n",
+            std::printf("[hello_metal] frame %4d  last=%.2fms  avg=%.2fms"
+                        "  cubes %u/%zu  sim=%.2fs  steps=%llu  alpha=%.2f%s\n",
                         frame,
                         mge::core::milliseconds(dt),
                         stats.avg_seconds() * 1000.0,
-                        cube_visible_count, cubes_proto.size());
+                        cube_visible_count, cubes_proto.size(),
+                        loop.sim_time(),
+                        static_cast<unsigned long long>(loop.step_count()),
+                        loop.last_alpha(),
+                        loop.is_paused() ? " [PAUSED]"
+                            : (loop.time_scale() < 0.99f ? " [SLOW]"
+                                : (loop.time_scale() > 1.01f ? " [FAST]" : "")));
             std::fflush(stdout);
         }
 

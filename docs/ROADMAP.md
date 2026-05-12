@@ -95,13 +95,15 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [x] **FrameGraph fix**: `topological_sort` now walks in declaration order and chains write-after-write edges, correctly ordering multi-write resources (bloom mips are written by both downsample and upsample).
   - [—] **Auto-exposure** — deferred to M9.b (needs either compute pipeline support or a mip-reduce fragment chain).
   - [—] **Motion vectors + TAA** — deferred to M9.b (needs previous-frame matrices, history texture, jittered projection, neighborhood clamp). Bigger than a single milestone slice.
-- [ ] **M10 — Game loop**
-  - [ ] Fixed timestep accumulator
-  - [ ] Decoupled render with interpolation
-  - [ ] Pause + time scale
-  - [ ] Deterministic mode + replay test
-  - [ ] Frame pacing under target fps
-  - [ ] Triple-buffered frame data
+- [x] **M10 — Game loop**
+  - [x] **`engine/core/game_loop.{h,cpp}`** — `GameLoop` class with the Fiedler accumulator. `tick(sim, render)` measures real_dt from `mge::core::now()`, clamps it to `max_real_dt`, scales by `time_scale`, consumes the accumulator into `fixed_dt` steps (capped by `max_steps_per_frame`), then calls `render(alpha)` and paces.
+  - [x] **Decoupled render with interpolation** — render callback receives `alpha ∈ [0,1)` between the latest completed sim step and the next. Demo applies it to the cube wobble for smooth motion between 60 Hz sim ticks.
+  - [x] **Pause + time scale** — `set_paused(bool)` freezes the accumulator; `set_time_scale(float)` ranges 0..∞ (clamped to ≥0).
+  - [x] **Deterministic mode** — `tick_with_dt(dt, sim, render)` bypasses the clock and pacing; identical input sequences produce bit-exact `sim_time` / `step_count`. Validated by a 500-step replay test.
+  - [x] **Frame pacing** — `pace_to_target()` uses absolute target times (no drift), `sleep_until` to ~250 µs before target, then spin-locks the tail.
+  - [x] **Spiral-of-death guard** — `max_steps_per_frame` caps catch-up; excess accumulator is dropped into `dropped_steps()` for visibility.
+  - [x] Demo integrated: `--time-scale F`, `--target-fps N`, `--sim-hz N`, `--paused`, `--demo-mode` (auto-cycles normal → paused → slow-mo → fast-fwd every ~3s of wall time).
+  - [—] **Triple-buffered sim snapshot ring** — deferred (single-threaded sim in Phase 1; ring becomes load-bearing only when sim runs on its own thread, Phase 1.5+).
 - [ ] **M11 — Profiling overlay**
   - [ ] On-screen CPU/GPU/mem/VRAM widget
   - [ ] Tracy zones across the engine

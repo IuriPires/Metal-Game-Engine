@@ -9,6 +9,7 @@ add_library(mge_core STATIC
     src/time.cpp
     src/assert.cpp
     src/log.cpp
+    src/game_loop.cpp
 )
 
 target_include_directories(mge_core

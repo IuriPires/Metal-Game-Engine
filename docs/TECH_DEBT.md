@@ -100,6 +100,24 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/rhi
 - **Created**: 2026-05-12, downgraded 2026-05-12
 
+## New debt opened in M10
+
+### [P1-SIM-THREAD-001] Sim runs on the render thread
+- **What**: `GameLoop::tick(sim, render)` calls sim and render back-to-back on the same thread. No dedicated simulation thread, no triple-buffered snapshot ring.
+- **Why now**: Single-threaded sim is correct + deterministic at Phase 1's scope (one sphere wobble). Threading is an architectural step that warrants its own milestone.
+- **Cost if left**: Cannot land networking rollback or large CPU-bound sims without the threading model. Render currently blocks if sim is slow.
+- **Fix path**: Phase 1.5+. Add a `SimSnapshotRing<T>` template with 3 slots, run sim on a dedicated thread feeding the ring, render reads the two most-recent and interpolates.
+- **Owner**: gameplay / core
+- **Created**: 2026-05-12
+
+### [P1-LOOP-PACING-001] Frame pacing competes with vsync
+- **What**: `pace_to_target` sleeps + spins to hit `target_fps`. With CAMetalLayer vsync on, the present already enforces 120 Hz, so our pacer almost always finds itself behind ("snap forward and return"). It's harmless but redundant.
+- **Why now**: Same code will be load-bearing when running with vsync off, or against displays with refresh rates other than 120.
+- **Cost if left**: None at current settings; a small amount of dead code per frame.
+- **Fix path**: Detect vsync mode from the swapchain and gate pacing. Or expose `--vsync off` and verify pacing controller hits target then.
+- **Owner**: core / platform
+- **Created**: 2026-05-12
+
 ## New debt opened in M9
 
 ### [P1-POSTFX-AUTOEXP-001] No auto-exposure
