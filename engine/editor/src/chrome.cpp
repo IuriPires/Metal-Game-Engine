@@ -282,7 +282,9 @@ void draw_panel_header(const char* title, const char* count_hint) {
 // ──── Outliner ──────────────────────────────────────────────────────────
 // One tree row matching .tree-row in the design: 22 px high, hover bg_2,
 // selected bg = acc_bg with a 2 px amber inset stripe on the left edge,
-// optional badge (mono, fg_3, bg_2-on-bd_2 chip), eye visibility icon.
+// optional mono badge floated right. The Selectable handles input + bg;
+// label + badge are drawn directly on the draw list so they don't mutate
+// the ImGui cursor (which would shift subsequent rows out of place).
 bool tree_row(int depth, const char* label, bool selected,
                const char* badge = nullptr) {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
@@ -290,8 +292,6 @@ bool tree_row(int depth, const char* label, bool selected,
     ImGui::PushStyleColor(ImGuiCol_Header,        col(tokens::acc_bg));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, col(tokens::bg_2));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,  col(tokens::acc_bg_2));
-    ImGui::PushStyleColor(ImGuiCol_Text,
-        col(selected ? tokens::acc : tokens::fg_1));
 
     const float row_h = s(tokens::tree_row_h);
     ImGui::PushID(label);
@@ -301,49 +301,61 @@ bool tree_row(int depth, const char* label, bool selected,
                                               ImGuiSelectableFlags_AllowOverlap,
                                               size);
 
+    auto* dl = ImGui::GetWindowDrawList();
+
     // 2 px amber inset stripe on selected row.
     if (selected) {
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            cursor,
-            ImVec2(cursor.x + s(2.0f), cursor.y + row_h),
-            tokens::acc);
+        dl->AddRectFilled(cursor,
+                           ImVec2(cursor.x + s(2.0f), cursor.y + row_h),
+                           tokens::acc);
     }
 
-    // Label drawn on top of the Selectable.
-    const float indent_x = s(static_cast<float>(depth) * 14.0f + 6.0f);
-    ImGui::SetCursorScreenPos(ImVec2(cursor.x + indent_x,
-                                       cursor.y + (row_h - ImGui::GetTextLineHeight()) * 0.5f));
-    ImGui::TextUnformatted(label);
+    // Label — DrawList::AddText so we don't disturb the layout cursor.
+    const float text_h   = ImGui::GetTextLineHeight();
+    const float label_y  = cursor.y + (row_h - text_h) * 0.5f;
+    const float label_x  = cursor.x + s(static_cast<float>(depth) * 14.0f + 6.0f);
+    const ImU32 label_co = selected ? tokens::acc : tokens::fg_1;
+    dl->AddText(ImVec2(label_x, label_y), label_co, label);
 
-    // Optional badge: mono chip floated to the right.
+    // Optional mono badge chip floated to the right edge.
     if (badge) {
-        ScopedMonoFont _;
-        const float bw = ImGui::CalcTextSize(badge).x + s(tokens::sp_3) * 2.0f;
-        ImGui::SetCursorScreenPos(ImVec2(cursor.x + size.x - bw - s(tokens::sp_4),
-                                           cursor.y + (row_h - ImGui::GetTextLineHeight()) * 0.5f
-                                                     - s(tokens::sp_1)));
-        const float bh = ImGui::GetTextLineHeight() + s(tokens::sp_1) * 2.0f;
-        const ImVec2 b0 = ImGui::GetCursorScreenPos();
-        const ImVec2 b1 = ImVec2(b0.x + bw, b0.y + bh);
-        const ImU32 bg = selected
+        ImFont* mono = fonts().mono;
+        const ImVec2 b_text_size = mono
+            ? mono->CalcTextSizeA(mono->LegacySize, FLT_MAX, 0.0f, badge)
+            : ImGui::CalcTextSize(badge);
+        const float chip_pad_x = s(tokens::sp_3);
+        const float chip_pad_y = s(tokens::sp_1);
+        const float chip_w = b_text_size.x + chip_pad_x * 2.0f;
+        const float chip_h = b_text_size.y + chip_pad_y * 2.0f;
+        const float chip_x = cursor.x + size.x - chip_w - s(tokens::sp_4);
+        const float chip_y = cursor.y + (row_h - chip_h) * 0.5f;
+
+        const ImU32 chip_bg = selected
             ? IM_COL32(0xE8, 0xA2, 0x4A, 0x14)
             : tokens::bg_2;
-        const ImU32 bd = selected
+        const ImU32 chip_bd = selected
             ? IM_COL32(0xE8, 0xA2, 0x4A, 0x4D)
             : tokens::bd_2;
-        const ImU32 fg = selected ? tokens::acc : tokens::fg_3;
-        auto* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(b0, b1, bg, s(tokens::r_1));
-        dl->AddRect(b0, b1, bd, s(tokens::r_1));
-        ImGui::SetCursorScreenPos(ImVec2(b0.x + s(tokens::sp_3),
-                                           b0.y + s(tokens::sp_1)));
-        ImGui::PushStyleColor(ImGuiCol_Text, col(fg));
-        ImGui::TextUnformatted(badge);
-        ImGui::PopStyleColor();
+        const ImU32 chip_fg = selected ? tokens::acc : tokens::fg_3;
+
+        dl->AddRectFilled(ImVec2(chip_x, chip_y),
+                           ImVec2(chip_x + chip_w, chip_y + chip_h),
+                           chip_bg, s(tokens::r_1));
+        dl->AddRect(ImVec2(chip_x, chip_y),
+                     ImVec2(chip_x + chip_w, chip_y + chip_h),
+                     chip_bd, s(tokens::r_1));
+        if (mono) {
+            dl->AddText(mono, mono->LegacySize,
+                         ImVec2(chip_x + chip_pad_x, chip_y + chip_pad_y),
+                         chip_fg, badge);
+        } else {
+            dl->AddText(ImVec2(chip_x + chip_pad_x, chip_y + chip_pad_y),
+                         chip_fg, badge);
+        }
     }
 
     ImGui::PopID();
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
     return clicked;
 }
