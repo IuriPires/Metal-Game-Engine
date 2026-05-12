@@ -17,6 +17,7 @@ add_executable(mge_integration_tests
     test_frame_graph_execute.cpp
     test_compute.cpp
     test_raytrace.cpp
+    test_hzb.cpp
 )
 
 target_link_libraries(mge_integration_tests

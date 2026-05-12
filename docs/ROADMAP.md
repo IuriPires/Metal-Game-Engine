@@ -143,7 +143,15 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
   - [—] **Material-aware hit shading** (M13.c) — needs a full RT pipeline with closest-hit programs, or per-instance material indirection through user-data + a probe lookup.
   - [—] **Soft shadows / area lights** — single sample per pixel today. TAA + multiple samples = future work.
   - [—] **CSM shadow pass removal** — pass + map are vestigial when RT is on. Kept for `--no-rt` fallback (P1-RT-CSM-FALLBACK-001).
-- [ ] M14 — GPU occlusion culling (depth pyramid + HZB) [needs compute, unblocked by M12]
+- [x] **M14 — GPU occlusion culling (HZB, stats-only v1)**
+  - [x] **HZB build compute** — 256×256 R32Float transient texture. One thread per HZB texel, reads its source-depth tile via `depth2d<float>::read`, MAX-reduces, writes. Conservative (object occluded iff its near depth exceeds HZB's max in that rect).
+  - [x] **HZB stats compute** — one thread per visible cube. Projects local unit AABB through `model * view_proj`, computes screen-space rect, max-reduces HZB texels in rect, compares to AABB's min NDC z. Writes per-instance visibility byte + atomic occluded counter.
+  - [x] **FrameGraph wiring** — `hzb.build` reads `depth`, writes `hzb`; `hzb.stats` reads `hzb` + instance buffer. New `ResourceUsage::ShaderWrite` to distinguish compute-write from color-attachment writes.
+  - [x] **HUD readback** — counter is in Shared storage, CPU reads previous frame's value, HUD displays `HZB X VIS Y OCC`.
+  - [x] **Integration test** — `test_hzb.cpp` fills a 4×4 R32F gradient via a fragment pass, runs a 2×2 reduce, validates tile-max correctness. 82/82 tests green.
+  - [—] **Mip pyramid** (M14.b) — current single-resolution HZB loops over the AABB rect per query. Proper pyramid samples the matching-mip texel directly.
+  - [—] **Actual draw filtering** (M14.b) — visibility bytes are computed but the draw still rasterizes all frustum-visible cubes. Either vertex-shader degenerate-clip (cheaper, minimal API surface) or full GPU-driven indirect via `MTLIndirectCommandBuffer` (bigger payoff, separate ADR).
+- [ ] M15 — LOD system
 - [ ] M15 — LOD system
 - [ ] M16 — Skeletal animation (mesh skinning + animation graph)
 - [ ] M17 — Skinning compute shader [unblocked by M12]

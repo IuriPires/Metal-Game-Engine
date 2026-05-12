@@ -289,6 +289,22 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P1-HZB-NOCULL-001] HZB cull writes visibility but draws don't read it
+- **What**: M14 v1 computes the per-instance visibility byte in `hzb_visibility_buf` and counts occluded cubes for the HUD, but the cube vertex shader still rasterizes every frustum-visible cube. No GPU time is actually saved.
+- **Why now**: Real cull either needs a vertex-shader degenerate-clip path (small change, modest win) or a GPU-driven indirect-command path (big change, big win). Splitting M14 off here keeps the milestone tight while validating the HZB pipeline end-to-end.
+- **Cost if left**: The HZB compute work runs but doesn't pay back. With ~10 % occluded cubes in our toy scene the upside is small; on dense scenes (city, dungeon) leaving this on the table is meaningful.
+- **Fix path**: M14.b. First pass: cube vertex shader reads `hzb_visibility_buf[iid - cube_base]`, outputs a degenerate vertex if 0. Second pass (later): switch to `MTLIndirectCommandBuffer` + `executeCommandsInBuffer`.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
+### [P1-HZB-SINGLEMIP-001] HZB has no mip pyramid
+- **What**: M14 v1 uses a single 256² HZB texture. Large AABBs sample many texels per query. Phase 1.5 mip-based HZB would let each query sample one texel from the matching-resolution mip.
+- **Why now**: Mip support needs either per-mip texture views (RHI API extension) or N separate textures (allocation noise). Single-resolution HZB ships with zero new RHI surface.
+- **Cost if left**: Per-instance query cost is O(rect-area) instead of O(1). Cheap at our cube count, costly at 10k+.
+- **Fix path**: Either add `Device::create_texture_view(tex, mip_range, slice_range)` + `ComputeEncoder::set_texture_view` (cleanest), or allocate one R32F texture per mip and bind them as an array.
+- **Owner**: rhi
+- **Created**: 2026-05-12
+
 ### [P1-RT-STATIC-TLAS-001] TLAS is static (built once at startup)
 - **What**: M13 builds the scene TLAS once during `DeferredRenderer::build_tlas` and never updates it. Moving / rotating / spawning geometry won't be reflected in RT shadows or reflections. The M11 sphere wobble was removed for this reason.
 - **Why now**: The blocking builder we have today would stall CPU on every frame to rebuild ~1k instances. Adding a non-blocking acceleration-structure command encoder + FrameGraph integration is M13.b scope.

@@ -36,6 +36,7 @@ enum class ResourceUsage : std::uint8_t {
     ColorAttachment,
     DepthAttachment,
     ShaderRead,
+    ShaderWrite,        // compute pass writing a storage texture
     CopySrc,
     CopyDst,
 };

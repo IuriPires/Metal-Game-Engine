@@ -888,6 +888,139 @@ constexpr const char* k_particle_render_msl = R"(
     }
 )";
 
+// ---------- M14 — HZB build + occlusion stats ----------
+//
+// hzb_build: each thread covers one HZB texel. Reads the corresponding tile
+// of the source gbuffer depth and writes the MAX (= farthest) depth into the
+// HZB. MAX is conservative — an object is occluded iff its nearest point is
+// farther than the HZB sample.
+constexpr const char* k_hzb_build_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct HzbBuildU {
+        uint src_w;
+        uint src_h;
+        uint dst_w;
+        uint dst_h;
+    };
+
+    kernel void hzb_build(depth2d<float, access::read>    src [[texture(0)]],
+                            texture2d<float, access::write> dst [[texture(1)]],
+                            constant HzbBuildU&             u   [[buffer(0)]],
+                            uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= u.dst_w || gid.y >= u.dst_h) return;
+        uint sx0 = (gid.x       * u.src_w) / u.dst_w;
+        uint sx1 = ((gid.x + 1) * u.src_w) / u.dst_w;
+        uint sy0 = (gid.y       * u.src_h) / u.dst_h;
+        uint sy1 = ((gid.y + 1) * u.src_h) / u.dst_h;
+        if (sx1 == sx0) sx1 = sx0 + 1;
+        if (sy1 == sy0) sy1 = sy0 + 1;
+        float maxd = 0.0;
+        for (uint y = sy0; y < sy1; ++y) {
+            for (uint x = sx0; x < sx1; ++x) {
+                float d = src.read(uint2(x, y));
+                if (d > maxd) maxd = d;
+            }
+        }
+        dst.write(float4(maxd), gid);
+    }
+)";
+
+// hzb_stats: one thread per cube instance. Project the local unit-cube AABB
+// (±0.5) through the instance model+VP, take the screen-space rect, sample
+// the HZB inside it, and compare to the AABB's minimum NDC z. Writes the
+// per-instance visibility flag (1 byte) and bumps an atomic counter for
+// occluded cubes.
+//
+// v1 — only the cube field is tested; spheres/ground stay always-visible.
+constexpr const char* k_hzb_stats_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct CullInstance {
+        float4x4 model;
+        float4x4 model_inv_t;
+        float4   albedo_ao;
+        float4   mr;
+    };
+
+    struct HzbCullU {
+        float4x4 view_proj;
+        uint     instance_count;     // visible cubes only
+        uint     hzb_w;
+        uint     hzb_h;
+        uint     base_instance;      // index of the first cube in instance_buf
+    };
+
+    kernel void hzb_stats(device const CullInstance*       instances [[buffer(0)]],
+                            constant     HzbCullU&            u         [[buffer(1)]],
+                            texture2d<float, access::read>   hzb       [[texture(0)]],
+                            device atomic_uint*              occluded  [[buffer(2)]],
+                            device uchar*                    visibility [[buffer(3)]],
+                            uint                              gid       [[thread_position_in_grid]]) {
+        if (gid >= u.instance_count) return;
+        CullInstance inst = instances[u.base_instance + gid];
+
+        // Local AABB is the unit cube [-0.5, +0.5]^3 (the engine cube mesh).
+        // Transform 8 corners through model and view_proj.
+        float min_z = 1e30;
+        float min_x = 1e30, max_x = -1e30;
+        float min_y = 1e30, max_y = -1e30;
+        bool any_behind_near = false;
+        for (int i = 0; i < 8; ++i) {
+            float3 local = float3((i & 1) ? 0.5 : -0.5,
+                                   (i & 2) ? 0.5 : -0.5,
+                                   (i & 4) ? 0.5 : -0.5);
+            float4 ws   = inst.model * float4(local, 1.0);
+            float4 clip = u.view_proj * ws;
+            if (clip.w <= 0.001) { any_behind_near = true; continue; }
+            float3 ndc = clip.xyz / clip.w;
+            min_x = min(min_x, ndc.x); max_x = max(max_x, ndc.x);
+            min_y = min(min_y, ndc.y); max_y = max(max_y, ndc.y);
+            min_z = min(min_z, ndc.z);
+        }
+        // Conservative: anything straddling the near plane is visible.
+        if (any_behind_near) {
+            visibility[gid] = 1;
+            return;
+        }
+        // Entirely off-screen → already frustum-culled by CPU; treat as
+        // visible (don't double-bill).
+        if (max_x < -1.0 || min_x > 1.0 || max_y < -1.0 || min_y > 1.0) {
+            visibility[gid] = 1;
+            return;
+        }
+        // Map NDC [-1,+1] → UV [0,1] with Y flip.
+        float2 uv_min = float2(min_x, -max_y) * 0.5 + 0.5;
+        float2 uv_max = float2(max_x, -min_y) * 0.5 + 0.5;
+        uv_min = clamp(uv_min, 0.0, 1.0);
+        uv_max = clamp(uv_max, 0.0, 1.0);
+        // HZB texel rect (inclusive).
+        int2 tmin = int2(floor(uv_min * float2(u.hzb_w, u.hzb_h)));
+        int2 tmax = int2(ceil (uv_max * float2(u.hzb_w, u.hzb_h)));
+        tmin = clamp(tmin, int2(0),
+                      int2(int(u.hzb_w) - 1, int(u.hzb_h) - 1));
+        tmax = clamp(tmax, int2(0),
+                      int2(int(u.hzb_w) - 1, int(u.hzb_h) - 1));
+
+        float hzb_max = 0.0;
+        for (int y = tmin.y; y <= tmax.y; ++y) {
+            for (int x = tmin.x; x <= tmax.x; ++x) {
+                float d = hzb.read(uint2(x, y)).r;
+                if (d > hzb_max) hzb_max = d;
+            }
+        }
+        // min_z is the AABB's NEAREST depth. If even that is FARTHER than
+        // HZB's MAX depth → fully behind every fragment in the rect.
+        bool visible = min_z <= hzb_max;
+        visibility[gid] = visible ? 1u : 0u;
+        if (!visible) {
+            atomic_fetch_add_explicit(occluded, 1u, memory_order_relaxed);
+        }
+    }
+)";
+
 constexpr const char* k_tonemap_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
@@ -1043,6 +1176,16 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_ground;
     std::unique_ptr<mge::rhi::AccelerationStructure> tlas;
 
+    // M14 — HZB occlusion culling
+    std::unique_ptr<mge::rhi::Shader>           hzb_build_shader;
+    std::unique_ptr<mge::rhi::ComputePipeline>  hzb_build_pso;
+    std::unique_ptr<mge::rhi::Shader>           hzb_stats_shader;
+    std::unique_ptr<mge::rhi::ComputePipeline>  hzb_stats_pso;
+    std::unique_ptr<mge::rhi::Buffer>           hzb_build_buf;     // HzbBuildU
+    std::unique_ptr<mge::rhi::Buffer>           hzb_cull_buf;      // HzbCullU
+    std::unique_ptr<mge::rhi::Buffer>           hzb_counter_buf;   // atomic_uint, Shared (CPU readback)
+    std::unique_ptr<mge::rhi::Buffer>           hzb_visibility_buf; // 1 byte / cube
+
     std::unique_ptr<mge::rhi::Buffer>  instance_buf;
     std::size_t                        instance_capacity = 0;
     std::unique_ptr<mge::rhi::Buffer>  frame_buf;
@@ -1071,11 +1214,16 @@ struct DeferredRenderer {
             r->device->create_shader_from_msl({k_particle_render_msl,  "particle.render"});
         r->lighting_rt_shader      =
             r->device->create_shader_from_msl({k_lighting_rt_msl,      "lighting.rt"});
+        r->hzb_build_shader        =
+            r->device->create_shader_from_msl({k_hzb_build_msl,        "hzb.build"});
+        r->hzb_stats_shader        =
+            r->device->create_shader_from_msl({k_hzb_stats_msl,        "hzb.stats"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
             !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
             !r->overlay_shader || !r->particle_compute_shader ||
-            !r->particle_render_shader || !r->lighting_rt_shader) {
+            !r->particle_render_shader || !r->lighting_rt_shader ||
+            !r->hzb_build_shader || !r->hzb_stats_shader) {
             return nullptr;
         }
 
@@ -1241,12 +1389,51 @@ struct DeferredRenderer {
             r->particle_render_buf = r->device->create_buffer(pu);
         }
 
+        // M14 HZB buffers: uniforms + atomic counter (shared, CPU readback) +
+        // per-instance visibility byte array (sized for the full cube field).
+        {
+            BufferDesc bd;
+            bd.size    = 16;  // HzbBuildU = 4 uint32
+            bd.usage   = BufferUsage::Uniform;
+            bd.storage = StorageMode::Shared;
+            bd.label   = "hzb.build_u";
+            r->hzb_build_buf = r->device->create_buffer(bd);
+        }
+        {
+            BufferDesc bd;
+            bd.size    = 16 * sizeof(float) + 16;  // float4x4 + 4 u32 (some pad)
+            bd.usage   = BufferUsage::Uniform;
+            bd.storage = StorageMode::Shared;
+            bd.label   = "hzb.cull_u";
+            r->hzb_cull_buf = r->device->create_buffer(bd);
+        }
+        {
+            BufferDesc bd;
+            bd.size    = sizeof(std::uint32_t);
+            bd.usage   = BufferUsage::Storage;
+            bd.storage = StorageMode::Shared;     // CPU reads back the counter
+            bd.label   = "hzb.counter";
+            r->hzb_counter_buf = r->device->create_buffer(bd);
+        }
+        {
+            BufferDesc bd;
+            // Sized to the worst case cube count. Visibility bytes; init=1.
+            bd.size    = instance_cap;
+            bd.usage   = BufferUsage::Storage;
+            bd.storage = StorageMode::Shared;
+            bd.label   = "hzb.visibility";
+            r->hzb_visibility_buf = r->device->create_buffer(bd);
+            std::memset(r->hzb_visibility_buf->contents(), 1, instance_cap);
+        }
+
         if (!r->sphere_vbuf || !r->sphere_ibuf || !r->ground_vbuf || !r->ground_ibuf ||
             !r->cube_vbuf || !r->cube_ibuf || !r->instance_buf || !r->frame_buf ||
             !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler ||
             !r->font_atlas || !r->overlay_sampler || !r->overlay_instance_buf ||
             !r->overlay_constants_buf || !r->particle_buf ||
-            !r->particle_sim_buf || !r->particle_render_buf) return nullptr;
+            !r->particle_sim_buf || !r->particle_render_buf ||
+            !r->hzb_build_buf || !r->hzb_cull_buf || !r->hzb_counter_buf ||
+            !r->hzb_visibility_buf) return nullptr;
 
         // One-shot atlas upload. Phase 1 RHI doesn't expose a buffer->texture
         // blit yet, so we drop to metal-cpp here. Logged as tech debt.
@@ -1431,6 +1618,22 @@ struct DeferredRenderer {
             r->particle_step_pso = r->device->create_compute_pipeline(pd);
         }
 
+        // HZB build + cull-stats compute pipelines.
+        {
+            ComputePipelineDesc pd;
+            pd.compute_shader = r->hzb_build_shader.get();
+            pd.compute_entry  = "hzb_build";
+            pd.label          = "hzb.build.pso";
+            r->hzb_build_pso  = r->device->create_compute_pipeline(pd);
+        }
+        {
+            ComputePipelineDesc pd;
+            pd.compute_shader = r->hzb_stats_shader.get();
+            pd.compute_entry  = "hzb_stats";
+            pd.label          = "hzb.stats.pso";
+            r->hzb_stats_pso  = r->device->create_compute_pipeline(pd);
+        }
+
         // Particle render pipeline: instanced billboard quads, additive emission
         // over the tonemapped HDR (post-tonemap pass writes to sRGB, but additive
         // still reads fine — the visual is "fire-glow over scene").
@@ -1457,7 +1660,8 @@ struct DeferredRenderer {
 
         if (!r->shadow_pso || !r->gbuffer_pso || !r->lighting_pso || !r->tonemap_pso ||
             !r->bright_pso || !r->downsample_pso || !r->upsample_pso || !r->overlay_pso ||
-            !r->particle_step_pso || !r->particle_render_pso) {
+            !r->particle_step_pso || !r->particle_render_pso ||
+            !r->hzb_build_pso || !r->hzb_stats_pso) {
             return nullptr;
         }
 
@@ -1899,6 +2103,17 @@ int run_windowed(const Args& a) {
             emit_text(glyphs, kPad, y, kScale, gray, buf);
             y += kLineH;
 
+            // HZB occlusion stats from the PREVIOUS frame (the counter buffer
+            // was written by last frame's hzb.stats compute pass; readback is
+            // safe here since the FG already committed + GPU has progressed).
+            const std::uint32_t hzb_occluded =
+                *static_cast<const std::uint32_t*>(r->hzb_counter_buf->contents());
+            const std::uint32_t hzb_visible = cube_visible_count > hzb_occluded
+                ? cube_visible_count - hzb_occluded : 0u;
+            std::snprintf(buf, sizeof(buf), "HZB  %5u VIS  %5u OCC", hzb_visible, hzb_occluded);
+            emit_text(glyphs, kPad, y, kScale, gray, buf);
+            y += kLineH;
+
             const char* state = loop.is_paused() ? "PAUSED"
                               : (loop.time_scale() < 0.99f ? "SLOW"
                                 : (loop.time_scale() > 1.01f ? "FAST" : "REAL"));
@@ -1947,11 +2162,18 @@ int run_windowed(const Args& a) {
             k_shadow_size, k_shadow_size, 1, PixelFormat::Depth32Float,
             TextureUsage::RenderTarget | TextureUsage::ShaderRead, StorageMode::Private};
 
+        constexpr std::uint32_t k_hzb_w = 256;
+        constexpr std::uint32_t k_hzb_h = 256;
+        TransientTextureDesc hzb_desc{
+            k_hzb_w, k_hzb_h, 1, PixelFormat::R32Float,
+            TextureUsage::ShaderRead | TextureUsage::ShaderWrite, StorageMode::Private};
+
         auto shadow_map = fg.create_texture(shadow_desc, "shadow_map");
         auto gb0        = fg.create_texture(gb0_desc,    "gb0");
         auto gb1        = fg.create_texture(gb1_desc,    "gb1");
         auto depth      = fg.create_texture(depth_desc,  "depth");
         auto hdr        = fg.create_texture(hdr_desc,    "hdr");
+        auto hzb_tex    = fg.create_texture(hzb_desc,    "hzb");
 
         fg.add_pass("shadow",
             [&](PassBuilder& pb) {
@@ -2015,6 +2237,68 @@ int run_windowed(const Args& a) {
                     enc.draw_indexed(r->cube_index_count, IndexType::UInt32,
                                       *r->cube_ibuf, 0, cube_visible_count);
                 }
+            });
+
+        // M14 HZB build — max-reduce gbuffer depth into a 256x256 R32F.
+        {
+            struct HzbBuildU { std::uint32_t src_w, src_h, dst_w, dst_h; };
+            HzbBuildU bu{fw, fh, k_hzb_w, k_hzb_h};
+            std::memcpy(r->hzb_build_buf->contents(), &bu, sizeof(bu));
+        }
+        fg.add_pass("hzb.build",
+            [&](PassBuilder& pb) {
+                pb.read(depth,   mge::frame_graph::ResourceUsage::ShaderRead);
+                pb.write(hzb_tex, mge::frame_graph::ResourceUsage::ShaderWrite);
+            },
+            [&](RenderContext& ctx) {
+                auto enc = ctx.cmd().begin_compute_pass("hzb.build");
+                enc.set_pipeline(*r->hzb_build_pso);
+                enc.set_texture(ctx.texture(depth),   0);
+                enc.set_texture(ctx.texture(hzb_tex), 1);
+                enc.set_buffer(*r->hzb_build_buf, 0);
+                const std::uint32_t tg =
+                    r->hzb_build_pso->thread_execution_width() >= 32 ? 8u : 4u;
+                enc.dispatch_threads(k_hzb_w, k_hzb_h, 1, tg, tg, 1);
+            });
+
+        // M14 HZB stats — per-cube AABB projection + HZB max-rect test.
+        // Reads the visible cube instance subset; writes occluded counter
+        // (Shared, CPU readback) + per-instance visibility bytes.
+        if (cube_visible_count > 0) {
+            struct HzbCullU {
+                mge::math::Mat4 view_proj;
+                std::uint32_t   instance_count;
+                std::uint32_t   hzb_w;
+                std::uint32_t   hzb_h;
+                std::uint32_t   base_instance;
+            };
+            HzbCullU cu{};
+            cu.view_proj      = camera.view_projection();
+            cu.instance_count = cube_visible_count;
+            cu.hzb_w          = k_hzb_w;
+            cu.hzb_h          = k_hzb_h;
+            cu.base_instance  = cube_base;
+            std::memcpy(r->hzb_cull_buf->contents(), &cu, sizeof(cu));
+
+            // Clear the atomic counter on CPU side (Shared buffer).
+            *static_cast<std::uint32_t*>(r->hzb_counter_buf->contents()) = 0u;
+        }
+        fg.add_pass("hzb.stats",
+            [&](PassBuilder& pb) {
+                pb.read(hzb_tex, mge::frame_graph::ResourceUsage::ShaderRead);
+            },
+            [&, count = cube_visible_count](RenderContext& ctx) {
+                if (count == 0) return;
+                auto enc = ctx.cmd().begin_compute_pass("hzb.stats");
+                enc.set_pipeline(*r->hzb_stats_pso);
+                enc.set_buffer(*r->instance_buf,       0);
+                enc.set_buffer(*r->hzb_cull_buf,       1);
+                enc.set_buffer(*r->hzb_counter_buf,    2);
+                enc.set_buffer(*r->hzb_visibility_buf, 3);
+                enc.set_texture(ctx.texture(hzb_tex),  0);
+                const std::uint32_t tg =
+                    r->hzb_stats_pso->thread_execution_width();
+                enc.dispatch_threads(count, 1, 1, tg, 1, 1);
             });
 
         fg.add_pass("lighting",
