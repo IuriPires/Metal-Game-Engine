@@ -23,8 +23,9 @@
 #include <string>
 #include <vector>
 
-namespace mge::platform { class Window; }
-namespace mge::profile  { struct ZoneStats; }
+namespace mge::platform     { class Window; }
+namespace mge::profile      { struct ZoneStats; }
+namespace mge::frame_graph  { class FrameGraph; }
 
 namespace mge::editor {
 
@@ -105,6 +106,9 @@ struct EngineState {
     float* ambient            = nullptr;   // 3 floats
     float* shadow_bias        = nullptr;
     float* reflection_strength = nullptr;
+
+    // M22 — FrameGraph view. Non-owning. Read-only.
+    const frame_graph::FrameGraph* fg = nullptr;
 };
 
 class Editor {

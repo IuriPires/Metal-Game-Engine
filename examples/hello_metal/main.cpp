@@ -2971,6 +2971,11 @@ int run_windowed(Args a) {
             es.shadow_bias        = &cvars.shadow_bias;
             es.reflection_strength = &cvars.reflection_strength;
 
+            // M22 — let the editor's FrameGraph panel walk the current
+            // frame's schedule. Read-only; FG is fully populated by the
+            // time the editor pass executes inside fg.execute().
+            es.fg = &fg;
+
             // Profiler snapshot — same data the M11 overlay used. Capture once
             // so the editor sees the latest zones without re-querying.
             static thread_local std::vector<mge::profile::ZoneStats> profiler_snap;

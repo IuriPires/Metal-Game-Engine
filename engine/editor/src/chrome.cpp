@@ -5,6 +5,8 @@
 #include "imgui_internal.h"
 
 #include "mge/core/version.h"
+#include "mge/frame_graph/frame_graph.h"
+#include "mge/frame_graph/pass.h"
 #include "mge/profile/profiler.h"
 
 #include <algorithm>
@@ -805,6 +807,129 @@ void draw_render_settings_panel(const EngineState& state) {
     ImGui::PopStyleVar();
 }
 
+void draw_framegraph_panel(const EngineState& state) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::BeginChild("##fg.body", ImVec2(0, 0));
+
+    if (!state.fg) {
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextWrapped("FrameGraph not bound.");
+        ImGui::PopStyleColor();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    const auto& fg       = *state.fg;
+    const auto& schedule = fg.schedule();
+
+    static std::uint32_t selected_pass = UINT32_MAX;
+
+    // Layout: split horizontally. Left = pass list (width ≈ 360), right =
+    // resource detail for the selected pass.
+    const float total_w = ImGui::GetContentRegionAvail().x;
+    const float total_h = ImGui::GetContentRegionAvail().y;
+    const float list_w  = std::min(s(360.0f), total_w * 0.45f);
+
+    ImGui::BeginChild("##fg.list", ImVec2(list_w, total_h));
+    {
+        ScopedMonoFont _;
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::Text("PASS                          R  W");
+        ImGui::PopStyleColor();
+    }
+    ImGui::Spacing();
+
+    for (std::uint32_t idx : schedule) {
+        const auto& p = fg.pass(idx);
+        const bool selected = idx == selected_pass;
+        ImGui::PushID(static_cast<int>(idx));
+        ImGui::PushStyleColor(ImGuiCol_Header,        col(tokens::acc_bg));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, col(tokens::bg_2));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  col(tokens::acc_bg_2));
+        ImGui::PushStyleColor(ImGuiCol_Text,
+            col(selected ? tokens::acc : tokens::fg_1));
+        ScopedMonoFont _;
+        char row[128];
+        std::snprintf(row, sizeof(row), "%-30.30s  %2zu  %2zu",
+                      p.name.c_str(), p.reads.size(), p.writes.size());
+        if (ImGui::Selectable(row, selected, 0,
+                                ImVec2(0, s(tokens::tree_row_h)))) {
+            selected_pass = idx;
+        }
+        ImGui::PopStyleColor(4);
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##fg.detail", ImVec2(0, total_h));
+    if (selected_pass != UINT32_MAX && selected_pass < fg.num_passes()) {
+        const auto& p = fg.pass(selected_pass);
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
+        {
+            ScopedMonoFont _;
+            ImGui::TextUnformatted(p.name.c_str());
+        }
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+
+        auto draw_resources = [&](const char* heading,
+                                    const std::vector<frame_graph::ResourceBinding>& bindings) {
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+            ImGui::TextUnformatted(heading);
+            ImGui::PopStyleColor();
+            if (bindings.empty()) {
+                ScopedMonoFont _;
+                ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+                ImGui::TextUnformatted("  -");
+                ImGui::PopStyleColor();
+                return;
+            }
+            for (const auto& b : bindings) {
+                const auto& name = fg.resource_name(b.handle);
+                const char* usage_str = "?";
+                switch (b.usage) {
+                    case frame_graph::ResourceUsage::ColorAttachment: usage_str = "color"; break;
+                    case frame_graph::ResourceUsage::DepthAttachment: usage_str = "depth"; break;
+                    case frame_graph::ResourceUsage::ShaderRead:      usage_str = "read";  break;
+                    case frame_graph::ResourceUsage::ShaderWrite:     usage_str = "write"; break;
+                    case frame_graph::ResourceUsage::CopySrc:         usage_str = "copy.src"; break;
+                    case frame_graph::ResourceUsage::CopyDst:         usage_str = "copy.dst"; break;
+                    case frame_graph::ResourceUsage::None:            usage_str = "—";     break;
+                }
+                ScopedMonoFont _;
+                ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_3));
+                ImGui::Text("  %-20s  %s", name.c_str(), usage_str);
+                ImGui::PopStyleColor();
+            }
+        };
+
+        draw_resources("READS", p.reads);
+        ImGui::Spacing();
+        draw_resources("WRITES", p.writes);
+        if (p.has_depth) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+            ImGui::TextUnformatted("DEPTH");
+            ImGui::PopStyleColor();
+            ScopedMonoFont _;
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_3));
+            ImGui::Text("  %s", fg.resource_name(p.depth.handle).c_str());
+            ImGui::PopStyleColor();
+        }
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextWrapped("Click a pass on the left to see its read/write resources.");
+        ImGui::PopStyleColor();
+    }
+    ImGui::EndChild();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
 void draw_dock_placeholder(const char* tab) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
                           ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
@@ -925,7 +1050,7 @@ void draw_chrome(const EngineState& state, Selection& sel) {
     switch (active_tab) {
         case 0: draw_console_panel();                 break;
         case 1: draw_profiler_panel(state);           break;
-        case 2: draw_dock_placeholder("FrameGraph");  break;
+        case 2: draw_framegraph_panel(state);         break;
         case 3: draw_render_settings_panel(state);    break;
         case 4: draw_dock_placeholder("Shader Reload"); break;
         default: break;
