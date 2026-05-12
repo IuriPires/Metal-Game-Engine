@@ -297,9 +297,11 @@ bool tree_row(int depth, const char* label, bool selected,
     ImGui::PushID(label);
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
     const ImVec2 size   = ImVec2(ImGui::GetContentRegionAvail().x, row_h);
-    const bool clicked  = ImGui::Selectable("##row", selected,
-                                              ImGuiSelectableFlags_AllowOverlap,
-                                              size);
+    // No AllowOverlap: it requires the previous-frame HoveredId to match,
+    // which throws away the first mouse click on a row. We don't have
+    // overlapping widgets inside the row anyway (labels + badges draw
+    // through the DrawList), so plain Selectable is correct.
+    const bool clicked  = ImGui::Selectable("##row", selected, 0, size);
 
     auto* dl = ImGui::GetWindowDrawList();
 
