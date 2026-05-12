@@ -1359,6 +1359,7 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_sphere;
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_cube;
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_ground;
+    std::unique_ptr<mge::rhi::AccelerationStructure> blas_tube;   // M24: dynamic, rebuilt every frame
     std::unique_ptr<mge::rhi::AccelerationStructure> tlas;
 
     // M16+M17 — Skinned mesh with compute-driven skinning. The source verts
@@ -2027,6 +2028,89 @@ struct DeferredRenderer {
 
         tlas = device->build_acceleration_structure(*queue, d);
         return tlas != nullptr;
+    }
+
+    // M24 — per-frame BLAS rebuild for the skinned tube + TLAS rebuild
+    // including the tube. Call after `fg.execute()` so the new acceleration
+    // structures land on the GPU queue AFTER the skin compute that produced
+    // tube_skinned_vbuf for this frame. Next frame's lighting pass reads the
+    // refreshed `tlas` — 1-frame lag, acceptable for ~animated geometry.
+    bool rebuild_dynamic_tlas(std::span<const Sphere> spheres,
+                                std::span<const CubeProto> cubes,
+                                const mge::math::Mat4& tube_world_xform) {
+        using namespace mge::rhi;
+        if (!device->info().supports_ray_tracing) return false;
+        if (!blas_sphere || !blas_cube || !blas_ground)  return false;
+        if (!tube_skinned_vbuf || tube_vertex_count == 0) return false;
+
+        // 1) Build tube BLAS over the skinned vertex buffer (output of the
+        //    skin compute pass that just ran this frame).
+        TriangleGeometryDesc tg;
+        tg.vertex_buffer  = tube_skinned_vbuf.get();
+        tg.vertex_stride  = sizeof(mge::assets::PbrVertex);
+        tg.vertex_count   = tube_vertex_count;
+        tg.vertex_format  = VertexFormat::Float32x3;
+        tg.index_buffer   = tube_ibuf.get();
+        tg.index_type     = IndexType::UInt32;
+        tg.triangle_count = tube_index_count / 3u;
+        tg.opaque         = true;
+        PrimitiveAccelDesc pbd;
+        pbd.geometries.push_back(tg);
+        pbd.label = "blas.tube";
+        auto new_tube_blas = device->build_acceleration_structure(*queue, pbd);
+        if (!new_tube_blas) return false;
+        blas_tube = std::move(new_tube_blas);
+
+        // 2) Rebuild TLAS with the four BLAS kinds. Same instance layout as
+        //    build_tlas but with a fourth BLAS index for the tube.
+        InstanceAccelDesc d;
+        d.blas  = {blas_sphere.get(), blas_ground.get(), blas_cube.get(),
+                   blas_tube.get()};
+        d.label = "scene.tlas";
+
+        const std::array<float, 9> identity_rs{1, 0, 0,  0, 1, 0,  0, 0, 1};
+        auto make_inst = [](std::uint32_t blas_idx, mge::math::Vec3 t,
+                              std::array<float, 9> rs) {
+            AccelInstance i;
+            i.transform_3x4 = {
+                rs[0], rs[1], rs[2], t.x,
+                rs[3], rs[4], rs[5], t.y,
+                rs[6], rs[7], rs[8], t.z,
+            };
+            i.blas_index = blas_idx;
+            return i;
+        };
+
+        for (const auto& s : spheres) {
+            d.instances.push_back(make_inst(0u, s.position, identity_rs));
+        }
+        d.instances.push_back(make_inst(1u, mge::math::Vec3{0.0f, 0.0f, 0.0f},
+                                           identity_rs));
+        const std::array<float, 9> cube_scale_rs{
+            k_cube_half, 0, 0,
+            0, k_cube_half, 0,
+            0, 0, k_cube_half};
+        for (const auto& c : cubes) {
+            d.instances.push_back(make_inst(2u, c.center, cube_scale_rs));
+        }
+        // Tube instance — pull translation out of the world matrix the demo
+        // binds to the rasterized tube. Rotation isn't applied to the tube
+        // yet so identity_rs is correct. Column-major: cols[3].xyz holds the
+        // translation.
+        const auto& t = tube_world_xform.cols[3];
+        AccelInstance tube_inst;
+        tube_inst.blas_index = 3u;
+        tube_inst.transform_3x4 = {
+            1, 0, 0, t.x,
+            0, 1, 0, t.y,
+            0, 0, 1, t.z,
+        };
+        d.instances.push_back(tube_inst);
+
+        auto new_tlas = device->build_acceleration_structure(*queue, d);
+        if (!new_tlas) return false;
+        tlas = std::move(new_tlas);
+        return true;
     }
 };
 
@@ -2783,6 +2867,9 @@ int run_windowed(Args a) {
                     enc.use_fragment_acceleration_structure(*r->blas_sphere);
                     enc.use_fragment_acceleration_structure(*r->blas_cube);
                     enc.use_fragment_acceleration_structure(*r->blas_ground);
+                    if (r->blas_tube) {
+                        enc.use_fragment_acceleration_structure(*r->blas_tube);
+                    }
                     enc.set_fragment_acceleration_structure(*r->tlas, 1);
                 } else {
                     enc.set_pipeline(*r->lighting_pso);
@@ -3077,6 +3164,20 @@ int run_windowed(Args a) {
         {
             MGE_PROFILE_ZONE("fg_execute");
             fg.execute(*r->queue, &frame_drawable);
+        }
+
+        // M24 — rebuild the dynamic TLAS for next frame. Runs after the
+        // FG cmd buf is committed so the skin compute's output is queued
+        // on the GPU before the AS build picks it up. Blocking call —
+        // accept the ~ms cost for now; refit-in-place lands in M24.b.
+        if (rt_active) {
+            MGE_PROFILE_ZONE("tlas_rebuild");
+            const mge::math::Mat4 tube_xform =
+                mge::math::translation(mge::math::Vec3{0.0f, 0.0f, 3.6f});
+            r->rebuild_dynamic_tlas(
+                std::span<const Sphere>(k_spheres.data(), k_spheres.size()),
+                std::span<const CubeProto>(cubes_proto.data(), cubes_proto.size()),
+                tube_xform);
         }
         };  // render_fn
 

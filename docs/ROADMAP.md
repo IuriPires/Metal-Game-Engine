@@ -227,6 +227,14 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
 
 ## Phase 3 — Systems (was Phase 2)
 
+- [x] **M24 — Dynamic TLAS (per-frame rebuild)**
+  - [x] `DeferredRenderer::rebuild_dynamic_tlas()` runs after `fg.execute()`. Builds a fresh tube BLAS from `tube_skinned_vbuf` (compute-skinned vertices for the current frame), then rebuilds the TLAS with sphere×5, ground, cube×1012, tube (1018 instances).
+  - [x] Skinned tube now casts RT shadow on the ground and appears in metallic-sphere reflections — closes `P1-SKIN-RT-001`, partly closes `P1-RT-STATIC-TLAS-001` (the *static* assumption is gone; the *refit* optimization is what's deferred to M24.b).
+  - [x] Lighting RT pass marks `r->blas_tube` resident via `use_fragment_acceleration_structure` so Metal keeps the per-frame BLAS alive across the lighting fragment shader.
+  - [x] HUD: new profile zone `tlas_rebuild` shows the cost.
+  - [—] **Sphere LOD-aware BLAS** — three sphere BLAS for high/mid/low geometry, TLAS instances point at the matching LOD per camera distance. Closes `P1-LOD-RT-BLAS-001`. Deferred to M24.b.
+  - [—] **Refit instead of full rebuild** — TLAS rebuild over 1018 instances is currently ~3 ms blocking. Refit-in-place (same topology, updated transforms) would be a fraction of that. Tracked as `P3-RT-REFIT-001`.
+- [ ] M25 — glTF + textured PBR
 - [ ] ECS proper (archetype storage)
 - [ ] Full job system (work stealing, priorities)
 - [ ] Physics (Jolt integration)

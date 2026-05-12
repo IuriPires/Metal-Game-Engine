@@ -289,6 +289,14 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P3-RT-REFIT-001] TLAS rebuilds in full every frame; refit not used
+- **What**: `rebuild_dynamic_tlas()` calls `Device::build_acceleration_structure` for both the tube BLAS and the scene TLAS each frame. Allocates a fresh AS + scratch buffer each time; blocks the CPU until the GPU finishes.
+- **Why now**: Refit (`MTLAccelerationStructureRefitOptions`) requires an existing AS allocated with `allowUpdate = YES` plus the same topology between rebuilds. Adding that to the RHI is its own slice of work, and at 1018 instances the full rebuild still hits ~3 ms — acceptable for the demo.
+- **Cost if left**: Per-frame ~3 ms blocking on the queue. Drops the demo from 120 FPS → ~83 FPS when the dynamic TLAS is active. Scales linearly with instance count, so any real scene blocks the editor budget hard.
+- **Fix path**: Add `AccelerationStructure` flags for `allowUpdate`. Expose `Device::refit_acceleration_structure(queue, AS, desc)` that re-uses the same physical AS + scratch buffers. Tube BLAS topology is constant (vertex count + index count never change) so refit is sufficient. TLAS refit also works since the instance count is fixed.
+- **Owner**: rhi + renderer
+- **Created**: 2026-05-12
+
 ### [P2-EDITOR-RELOAD-001] Shader Reload only validates compile, no live swap
 - **What**: The Shader Reload panel's per-shader button re-invokes `Device::create_shader_from_msl` to confirm the source still compiles. It does NOT replace the active PSO bound on the live pipelines.
 - **Why now**: Hot-swap requires a stable shader-by-name registry the engine can use to find every PSO that referenced the old shader, then re-build each PSO with the new module. Today the demo creates each PSO inline with a captured shader pointer, so there's no central registry.
@@ -305,13 +313,10 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: editor
 - **Created**: 2026-05-12
 
-### [P1-SKIN-RT-001] Skinned tube is invisible to RT shadows + reflections
-- **What**: M16's skinned tube renders through the deferred path but isn't in the TLAS. It gets no ray-traced shadow on the ground and isn't reflected by metallic spheres. CSM also doesn't include it (no entry in the shadow pass).
-- **Why now**: TLAS is static (P1-RT-STATIC-TLAS-001). Adding skinned geometry requires per-frame TLAS refit so the BVH tracks the deformation.
-- **Cost if left**: Visual disconnect — tube looks "floaty" because it has no shadow on the ground.
-- **Fix path**: Lands together with dynamic TLAS support: every frame, run the same skinning math on CPU (or via the M17 compute) into a "shadow proxy" vertex buffer, rebuild the tube's BLAS, refit the TLAS instance. Or use compute skinning's output buffer directly.
-- **Owner**: renderer
-- **Created**: 2026-05-12
+### [P1-SKIN-RT-001] Skinned tube is invisible to RT shadows + reflections — RESOLVED (M24, 2026-05-12)
+- **Was**: M16's skinned tube renders through the deferred path but isn't in the TLAS. It gets no ray-traced shadow on the ground and isn't reflected by metallic spheres.
+- **Fix**: M24's `rebuild_dynamic_tlas` rebuilds the tube BLAS from `tube_skinned_vbuf` (compute skinning output) each frame, then rebuilds the TLAS to include the tube instance. The lighting RT pass marks `blas_tube` resident via `use_fragment_acceleration_structure`. 1-frame lag because the build runs after `fg.execute()`; acceptable for sub-second motion.
+- **Cost paid**: ~3 ms blocking per frame for the full rebuild — `P3-RT-REFIT-001` tracks the refit optimization.
 
 ### [P1-LOD-DISTANCE-001] LOD selection uses raw distance, not projected size
 - **What**: `sphere_lod[i]` is picked from `length(camera - sphere)` against fixed thresholds (9 m, 18 m). Doesn't account for FOV / zoom: a 30°-FOV camera at 20 m sees a sphere bigger than a 90°-FOV camera at 10 m, but the LOD pick is identical.
