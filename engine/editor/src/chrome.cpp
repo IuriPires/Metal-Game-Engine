@@ -930,16 +930,82 @@ void draw_framegraph_panel(const EngineState& state) {
     ImGui::PopStyleVar();
 }
 
-void draw_dock_placeholder(const char* tab) {
+void draw_shader_reload_panel(const EngineState& state) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
                           ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::BeginChild("##shader.body", ImVec2(0, 0));
+
+    if (!state.shaders || state.shader_count == 0) {
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextWrapped("No shader entries registered.");
+        ImGui::PopStyleColor();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    // Header.
+    {
+        ScopedMonoFont _;
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::Text("SHADER                       ENTRY               STATUS");
+        ImGui::PopStyleColor();
+    }
+    ImGui::Spacing();
+
+    for (std::uint32_t i = 0; i < state.shader_count; ++i) {
+        const auto& sh = state.shaders[i];
+        const ImU32 status_col = sh.ok ? tokens::ok : tokens::err;
+        const char* status_str = sh.ok ? "OK"  : "ERR";
+
+        ImGui::PushID(static_cast<int>(i));
+        {
+            ScopedMonoFont _;
+            ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
+            ImGui::Text("%-28.28s %-19.19s",
+                         sh.name        ? sh.name        : "?",
+                         sh.entry_point ? sh.entry_point : "?");
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine();
+        {
+            ScopedMonoFont _;
+            ImGui::PushStyleColor(ImGuiCol_Text, col(status_col));
+            ImGui::Text("%-5s", status_str);
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine(0.0f, s(tokens::sp_5));
+
+        // Reload button — accent-bordered chip, monospace label.
+        ImGui::PushStyleColor(ImGuiCol_Button,        col(tokens::bg_2));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col(tokens::bg_3));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  col(tokens::bg_4));
+        ImGui::PushStyleColor(ImGuiCol_Text,         col(tokens::acc));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                              ImVec2(s(tokens::sp_4), s(tokens::sp_1)));
+        if (ImGui::Button("Reload")) {
+            if (state.reload_shader) {
+                state.reload_shader(state.reload_user, i);
+            }
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(4);
+        ImGui::PopID();
+    }
+
+    ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-    ImGui::BeginChild("##phx", ImVec2(0, 0));
-    ImGui::TextWrapped("%s panel wires up in M20.b.", tab);
-    ImGui::EndChild();
+    ImGui::TextWrapped("M23.b will swap the live pipeline in place after a successful reload. "
+                         "Today this only re-validates the MSL compile.");
     ImGui::PopStyleColor();
+
+    ImGui::EndChild();
     ImGui::PopStyleVar();
 }
+
+// draw_dock_placeholder was used while Console / Profiler / FrameGraph /
+// Render Settings / Shader Reload tabs were stubs. M22+M23 wired every tab
+// to real content; remove if nothing references it.
 
 void draw_inspector(const EngineState& state, Selection& sel) {
     draw_panel_header("INSPECTOR", "");
@@ -1052,7 +1118,7 @@ void draw_chrome(const EngineState& state, Selection& sel) {
         case 1: draw_profiler_panel(state);           break;
         case 2: draw_framegraph_panel(state);         break;
         case 3: draw_render_settings_panel(state);    break;
-        case 4: draw_dock_placeholder("Shader Reload"); break;
+        case 4: draw_shader_reload_panel(state);        break;
         default: break;
     }
 

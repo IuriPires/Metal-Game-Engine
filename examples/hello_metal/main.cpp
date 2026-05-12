@@ -2976,6 +2976,61 @@ int run_windowed(Args a) {
             // time the editor pass executes inside fg.execute().
             es.fg = &fg;
 
+            // M23 — shader entries + reload callback. The list mirrors the
+            // engine's inline MSL sources; click "Reload" invokes
+            // device->create_shader_from_msl as a compile sanity check (no
+            // PSO hot-swap yet — M23.b will do that once we have a stable
+            // PSO-by-name map).
+            struct ShaderRow {
+                const char* name;
+                const char* entry;
+                const char* source;
+            };
+            static constexpr ShaderRow kShaderRows[] = {
+                {"shadow",          "shadow_vs",          k_shadow_msl},
+                {"gbuffer",         "gbuffer_vs/fs",      k_gbuffer_msl},
+                {"lighting",        "lighting_vs/fs",     k_lighting_msl},
+                {"lighting.rt",     "lighting_rt_vs/fs",  k_lighting_rt_msl},
+                {"tonemap",         "tonemap_vs/fs",      k_tonemap_msl},
+                {"bloom.bright",    "bright_fs",          k_bright_msl},
+                {"bloom.ds",        "downsample_fs",      k_downsample_msl},
+                {"bloom.us",        "upsample_fs",        k_upsample_msl},
+                {"overlay",         "overlay_vs/fs",      k_overlay_msl},
+                {"particle.compute","particle_step",      k_particle_compute_msl},
+                {"particle.render", "particle_vs/fs",     k_particle_render_msl},
+                {"hzb.build",       "hzb_build",          k_hzb_build_msl},
+                {"hzb.stats",       "hzb_stats",          k_hzb_stats_msl},
+                {"skin.compute",    "skin_tube",          k_skin_compute_msl},
+            };
+            static std::array<mge::editor::ShaderEntry, std::size(kShaderRows)>
+                shader_entries{};
+            for (std::size_t i = 0; i < std::size(kShaderRows); ++i) {
+                shader_entries[i].name        = kShaderRows[i].name;
+                shader_entries[i].entry_point = kShaderRows[i].entry;
+                // shader_entries[i].ok keeps its previous value across frames.
+            }
+            struct ReloadCtx {
+                mge::rhi::Device*           device;
+                mge::editor::ShaderEntry*   entries;
+                std::size_t                 count;
+                const ShaderRow*            rows;
+            };
+            static ReloadCtx reload_ctx{r->device.get(), shader_entries.data(),
+                                          shader_entries.size(), kShaderRows};
+            auto reload_fn = +[](void* user, std::uint32_t idx) -> bool {
+                auto* ctx = static_cast<ReloadCtx*>(user);
+                if (idx >= ctx->count) return false;
+                const auto& row = ctx->rows[idx];
+                auto sh = ctx->device->create_shader_from_msl({row.source, row.name});
+                ctx->entries[idx].ok = sh != nullptr;
+                return ctx->entries[idx].ok;
+            };
+
+            es.shaders        = shader_entries.data();
+            es.shader_count   = static_cast<std::uint32_t>(shader_entries.size());
+            es.reload_shader  = reload_fn;
+            es.reload_user    = &reload_ctx;
+
             // Profiler snapshot — same data the M11 overlay used. Capture once
             // so the editor sees the latest zones without re-querying.
             static thread_local std::vector<mge::profile::ZoneStats> profiler_snap;

@@ -41,6 +41,17 @@ struct SphereView {
     float*      ao          = nullptr;
 };
 
+// Compact descriptor for one of the engine's inline MSL shaders. The demo
+// owns the source strings; the editor reads them through the pointers and
+// invokes `reload` to ask the demo to re-compile + (optionally) hot-swap.
+struct ShaderEntry {
+    const char* name        = nullptr;
+    const char* entry_point = nullptr;
+    bool        ok          = true;       // last compile state
+};
+
+using ShaderReloadFn = bool (*)(void* user, std::uint32_t idx);
+
 // Logical selection (M19 v1 — extends as more entity kinds gain inspectors).
 enum class SelectionKind : std::uint8_t {
     None,
@@ -109,6 +120,13 @@ struct EngineState {
 
     // M22 — FrameGraph view. Non-owning. Read-only.
     const frame_graph::FrameGraph* fg = nullptr;
+
+    // M23 — shader list + reload hook. The editor never holds the source
+    // strings; just renders names + ok flag and invokes the callback.
+    ShaderEntry*   shaders        = nullptr;
+    std::uint32_t  shader_count   = 0;
+    ShaderReloadFn reload_shader  = nullptr;
+    void*          reload_user    = nullptr;
 };
 
 class Editor {
