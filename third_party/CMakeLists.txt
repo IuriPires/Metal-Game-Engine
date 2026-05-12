@@ -33,7 +33,10 @@ FetchContent_Declare(fmt
     GIT_TAG        10.2.1
     GIT_SHALLOW    TRUE
 )
-# FetchContent_MakeAvailable(fmt)  # enable at M2
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+set(FMT_TEST    OFF CACHE BOOL "" FORCE)
+set(FMT_DOC     OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(fmt)
 
 # -----------------------------------------------------------------------------
 # metal-cpp — Apple's C++ binding for Metal

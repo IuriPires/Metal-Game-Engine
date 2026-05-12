@@ -21,11 +21,13 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [x] Frame timing readout (`mge::core::FrameStats`)
   - [x] metal-cpp 26.4 wired (Apple Clang framework-search workaround documented in ADR)
   - [x] tiny Obj-C++ shim confined to `engine/platform/macos/` (per ADR-0001)
-- [ ] **M2 — Core systems**
-  - [ ] Logger, Assert, Result<T,E>, Time, Config
-  - [ ] Custom SIMD math (vec2/3/4, mat4, quat)
-  - [ ] Arena, Pool allocators
-  - [ ] Unit tests: math invariants, allocator correctness
+- [x] **M2 — Core systems**
+  - [x] Logger (leveled, sink-based, capturing sink for tests), Assert (`MGE_ASSERT`/`VERIFY`/`UNREACHABLE`), `Result<T,E>`, `Time`/`FrameStats`
+  - [x] Custom SIMD math (Vec2/3/4, Mat3/Mat4, Quat, Aabb) with NEON Mat4×Mat4 + Mat4×Vec4; ABI compat with MSL asserted at compile time
+  - [x] `Arena` + `Pool` allocators with `Stats`; owning variants
+  - [x] 30 unit tests (math invariants, NEON↔scalar parity, allocator correctness, logger filtering, Result)
+  - [x] fmt 10.2.1 wired
+  - [—] Config (deferred — needed first at M4 when assets land)
 - [ ] **M3 — RHI v1 + first triangle**
   - [ ] RHI types: Device, Queue, CmdBuffer, Pipeline, Buffer, Texture, Sampler, Fence
   - [ ] Metal backend implementation

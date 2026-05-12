@@ -9,11 +9,17 @@ add_executable(mge_unit_tests
     test_smoke.cpp
     test_version.cpp
     test_time.cpp
+    test_result.cpp
+    test_log.cpp
+    test_math.cpp
+    test_memory.cpp
 )
 
 target_link_libraries(mge_unit_tests
     PRIVATE
         mge::core
+        mge::math
+        mge::memory
         doctest::doctest
         mge_warnings
         mge_sanitizers
