@@ -79,25 +79,37 @@ endif()
 
 # -----------------------------------------------------------------------------
 # cgltf — single-header glTF loader
-#   Consumed by: M4 (mesh loading)
+#   Consumed by: M25a (asset pipeline)
 # -----------------------------------------------------------------------------
 FetchContent_Declare(cgltf
     GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
     GIT_TAG        v1.14
     GIT_SHALLOW    TRUE
 )
-# FetchContent_MakeAvailable(cgltf)  # enable at M4
+FetchContent_MakeAvailable(cgltf)
+
+if(NOT TARGET cgltf::cgltf)
+    add_library(cgltf_headers INTERFACE)
+    target_include_directories(cgltf_headers SYSTEM INTERFACE ${cgltf_SOURCE_DIR})
+    add_library(cgltf::cgltf ALIAS cgltf_headers)
+endif()
 
 # -----------------------------------------------------------------------------
 # stb — image loading + writing (textures + golden PNGs)
-#   Consumed by: M3 (golden image), M4 (textures)
+#   Consumed by: M25a (asset pipeline), future golden-image diff
 # -----------------------------------------------------------------------------
 FetchContent_Declare(stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG        master  # TODO: pin at M3
-    GIT_SHALLOW    TRUE
+    GIT_TAG        f7f20f39fe4f206c6f19e26ebfef7b261ee59ee4  # 2024-10
+    GIT_SHALLOW    FALSE
 )
-# FetchContent_MakeAvailable(stb)  # enable at M3
+FetchContent_MakeAvailable(stb)
+
+if(NOT TARGET stb::stb)
+    add_library(stb_headers INTERFACE)
+    target_include_directories(stb_headers SYSTEM INTERFACE ${stb_SOURCE_DIR})
+    add_library(stb::stb ALIAS stb_headers)
+endif()
 
 # -----------------------------------------------------------------------------
 # Tracy — frame profiler

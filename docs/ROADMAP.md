@@ -234,7 +234,13 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [x] HUD: new profile zone `tlas_rebuild` shows the cost.
   - [—] **Sphere LOD-aware BLAS** — three sphere BLAS for high/mid/low geometry, TLAS instances point at the matching LOD per camera distance. Closes `P1-LOD-RT-BLAS-001`. Deferred to M24.b.
   - [—] **Refit instead of full rebuild** — TLAS rebuild over 1018 instances is currently ~3 ms blocking. Refit-in-place (same topology, updated transforms) would be a fraction of that. Tracked as `P3-RT-REFIT-001`.
-- [ ] M25 — glTF + textured PBR
+- [x] **M25a — Asset pipeline foundation (cgltf + stb + RHI upload)**
+  - [x] cgltf 1.14 and stb (master pinned to 2024-10) `FetchContent_MakeAvailable` in `third_party/`. Header-only INTERFACE targets (`cgltf::cgltf`, `stb::stb`).
+  - [x] `Texture::upload_region(mip, x, y, w, h, bytes, bytes_per_row)` on the RHI. Closes `P1-RHI-TEXUPLOAD-001`. Private-storage path tracked as `P3-RHI-BLIT-001`.
+  - [x] `engine/assets/texture_load.{h,cpp}` — stb-based RGBA8 decoder (always returns 4-channel, expands grayscale/RGB).
+  - [x] `engine/assets/gltf_load.{h,cpp}` — cgltf-driven scene loader. Emits `GltfMesh` (positions + normals + UVs + indices, 48 B vertex) + `GltfMaterial` (base color factor / metallic / roughness + indices into `GltfTexture[]`).
+  - [x] Integration test `test_gltf_load.cpp` synthesises a 3-vertex .glb in memory, writes it to a temp file, validates vertex/index/material readback. 83/83 tests green.
+- [ ] M25b — Textured PBR shader + demo asset
 - [ ] ECS proper (archetype storage)
 - [ ] Full job system (work stealing, priorities)
 - [ ] Physics (Jolt integration)

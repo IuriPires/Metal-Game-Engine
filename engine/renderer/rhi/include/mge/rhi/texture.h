@@ -40,6 +40,16 @@ public:
     [[nodiscard]] void*       native() noexcept { return native_; }
     [[nodiscard]] const void* native() const noexcept { return native_; }
 
+    // M25a — upload CPU-side pixel data into a mip + sub-region. The texture
+    // must be `StorageMode::Shared` (Private textures require a blit through
+    // a staging buffer — M25a.b will add that path). `bytes_per_row` matches
+    // Metal's expected source pitch (width * bytes_per_pixel for tightly
+    // packed data). Returns false on invalid region / wrong storage mode.
+    bool upload_region(std::uint32_t mip_level,
+                       std::uint32_t x, std::uint32_t y,
+                       std::uint32_t width, std::uint32_t height,
+                       const void* bytes, std::size_t bytes_per_row) noexcept;
+
 private:
     friend class Device;
     friend class Swapchain;

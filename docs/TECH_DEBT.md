@@ -289,6 +289,17 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P3-RHI-BLIT-001] No blit encoder for Private-storage texture upload
+- **What**: `Texture::upload_region` only works on Shared/Managed textures (calls `replaceRegion`). Private-storage textures, which are faster for read-heavy assets, can't be populated from the CPU through the public API.
+- **Why now**: M25a only needs Shared uploads (glTF maps are small enough that the Shared cost is fine).
+- **Cost if left**: At scale (4K base color maps, IBL env maps) we want Private storage for sustained read perf. Today that path is blocked.
+- **Fix path**: Add `Device::create_blit_encoder()` on `CommandBuffer` (`MTL::BlitCommandEncoder`). Implement an upload helper that:
+  - Allocates a Shared staging buffer
+  - `memcpy`s CPU bytes into it
+  - Encodes `copyFromBuffer:sourceOffset:...:toTexture:destinationSlice:...` on the blit encoder
+- **Owner**: rhi
+- **Created**: 2026-05-12
+
 ### [P3-RT-REFIT-001] TLAS rebuilds in full every frame; refit not used
 - **What**: `rebuild_dynamic_tlas()` calls `Device::build_acceleration_structure` for both the tube BLAS and the scene TLAS each frame. Allocates a fresh AS + scratch buffer each time; blocks the CPU until the GPU finishes.
 - **Why now**: Refit (`MTLAccelerationStructureRefitOptions`) requires an existing AS allocated with `allowUpdate = YES` plus the same topology between rebuilds. Adding that to the RHI is its own slice of work, and at 1018 instances the full rebuild still hits ~3 ms — acceptable for the demo.
@@ -382,10 +393,7 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
-### [P1-RHI-TEXUPLOAD-001] Font atlas upload bypasses RHI via metal-cpp escape hatch
-- **What**: `examples/hello_metal/main.cpp` uses `MTL::Texture::replaceRegion` directly to upload the 8-bit font atlas. The RHI `Texture` type has no `upload_region` / `replace_region` method yet.
-- **Why now**: M11 is the first time we needed CPU→GPU texture data after creation. Adding a proper RHI texture upload path (with staging buffer + blit encoder for private-storage textures) is a real interface change and would have pulled scope on M11.
-- **Cost if left**: One Metal-specific call leaks into the demo. The RHI abstraction has a hole for any future texture upload (e.g. glTF base color maps at M6.1, environment maps for IBL).
-- **Fix path**: Add `RhiTexture::upload_region(level, x, y, w, h, bytes, bytes_per_row)`; in the Metal backend, blit-encode shared→private when the texture is in `Storage::Private`. Lands with the glTF + texture loader.
-- **Owner**: rhi
-- **Created**: 2026-05-12
+### [P1-RHI-TEXUPLOAD-001] Font atlas upload bypasses RHI via metal-cpp escape hatch — RESOLVED (M25a, 2026-05-12)
+- **Was**: `examples/hello_metal/main.cpp` used `MTL::Texture::replaceRegion` directly to upload the M11 font atlas. The RHI had no public upload API.
+- **Fix**: `Texture::upload_region(mip, x, y, w, h, bytes, bytes_per_row)` lands on the RHI. Metal backend calls `replaceRegion` for Shared/Managed textures. Demo's font atlas still uses the escape hatch but the API is now available for the M25 glTF texture uploads.
+- **Outstanding**: Private-storage textures still need a staging-buffer + blit-encoder path. Tracked as `P3-RHI-BLIT-001` for when we move font atlas / glTF maps to Private.
