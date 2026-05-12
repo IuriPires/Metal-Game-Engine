@@ -28,6 +28,35 @@ namespace mge::profile  { struct ZoneStats; }
 
 namespace mge::editor {
 
+// Editable PBR sphere material — the demo's k_spheres entries collapse to
+// this when handed to the editor. Position is read-only for now; M19c will
+// add transform editing.
+struct SphereView {
+    const char* name        = nullptr;
+    float       position[3] = {0.0f, 0.0f, 0.0f};
+    float*      albedo      = nullptr;   // RGB, [0..1]
+    float*      metallic    = nullptr;
+    float*      roughness   = nullptr;
+    float*      ao          = nullptr;
+};
+
+// Logical selection (M19 v1 — extends as more entity kinds gain inspectors).
+enum class SelectionKind : std::uint8_t {
+    None,
+    Scene,
+    SpheresGroup,
+    Sphere,
+    CubeField,
+    ParticleEmitter,
+    SkinnedTube,
+    SunLight,
+    Camera,
+};
+struct Selection {
+    SelectionKind kind  = SelectionKind::None;
+    std::uint32_t index = 0;     // only meaningful for Sphere
+};
+
 // Compact view of per-frame engine state that the editor reads to populate
 // the HUD lines, profiler bars, render-settings toggles, etc. Pass by const
 // reference each frame.
@@ -58,6 +87,15 @@ struct EngineState {
 
     // Profiler snapshot (already collected by mge::profile).
     const std::vector<profile::ZoneStats>* cpu_zones = nullptr;
+
+    // Scene model — mutable handles into the demo's state. The inspector
+    // edits these in place; the next frame's instance buffer picks the
+    // changes up automatically.
+    SphereView*   spheres        = nullptr;
+    std::uint32_t sphere_count   = 0;
+
+    // Static metadata for the Outliner.
+    std::uint32_t tube_bone_count = 0;
 };
 
 class Editor {
@@ -92,12 +130,16 @@ public:
     [[nodiscard]] bool visible() const noexcept { return visible_; }
     void               set_visible(bool v) noexcept { visible_ = v; }
 
+    [[nodiscard]] Selection& selection() noexcept { return selection_; }
+    [[nodiscard]] const Selection& selection() const noexcept { return selection_; }
+
     // Internal: lets the platform shim forward NSEvents.
     [[nodiscard]] void* native_window() const noexcept { return native_window_; }
 
 private:
     Editor() = default;
     bool        visible_       = true;
+    Selection   selection_{};
     void*       native_window_ = nullptr;
     void*       metal_device_  = nullptr;
 };

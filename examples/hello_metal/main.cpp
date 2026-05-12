@@ -1249,13 +1249,22 @@ struct Sphere {
     float           ao;
 };
 
-const std::array<Sphere, 5> k_spheres = {{
+std::array<Sphere, 5> k_spheres = {{
     {{-2.4f, 1.2f, 0}, {0.722f, 0.451f, 0.20f}, 0.0f, 0.10f, 1.0f},
     {{-1.2f, 1.2f, 0}, {0.722f, 0.451f, 0.20f}, 0.0f, 0.50f, 1.0f},
     {{ 0.0f, 1.2f, 0}, {0.722f, 0.451f, 0.20f}, 0.0f, 1.00f, 1.0f},
     {{ 1.2f, 1.2f, 0}, {0.95f,  0.64f,  0.54f}, 1.0f, 0.10f, 1.0f},
     {{ 2.4f, 1.2f, 0}, {0.95f,  0.64f,  0.54f}, 1.0f, 0.50f, 1.0f},
 }};
+
+// M19b — labels used by the editor's Outliner.
+constexpr const char* k_sphere_names[5] = {
+    "Sphere.00 - Bronze rough",
+    "Sphere.01 - Bronze med",
+    "Sphere.02 - Bronze gloss",
+    "Sphere.03 - Steel rough",
+    "Sphere.04 - Steel gloss",
+};
 
 constexpr std::uint32_t k_shadow_size = 2048;
 
@@ -2908,6 +2917,25 @@ int run_windowed(Args a) {
             es.hzb_occluded     =
                 *static_cast<const std::uint32_t*>(r->hzb_counter_buf->contents());
             es.particles        = k_particle_count;
+            es.tube_bone_count  = kSkinnedTubeBones;
+
+            // Sphere bindings — editor reads/writes albedo/metallic/roughness/AO
+            // in place. Material edits show on the next frame's gbuffer.
+            std::array<mge::editor::SphereView, 5> sphere_views{};
+            for (std::size_t i = 0; i < k_spheres.size(); ++i) {
+                auto& sv         = sphere_views[i];
+                auto& src        = k_spheres[i];
+                sv.name          = k_sphere_names[i];
+                sv.position[0]   = src.position.x;
+                sv.position[1]   = src.position.y;
+                sv.position[2]   = src.position.z;
+                sv.albedo        = &src.albedo.x;
+                sv.metallic      = &src.metallic;
+                sv.roughness     = &src.roughness;
+                sv.ao            = &src.ao;
+            }
+            es.spheres      = sphere_views.data();
+            es.sphere_count = static_cast<std::uint32_t>(sphere_views.size());
 
             fg.add_pass("editor",
                 [&](PassBuilder& pb) {

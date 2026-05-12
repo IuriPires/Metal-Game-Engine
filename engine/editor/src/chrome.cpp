@@ -246,10 +246,13 @@ void draw_statusbar(const EngineState& state) {
     end_chrome_bar(tokens::bd_1);
 }
 
-void draw_panel_placeholder(const char* title, const char* count_hint) {
+// Panel header (.panel-hdr in styles.css): ALL-CAPS title in fg_2, optional
+// count hint in mono fg_4, hairline bottom divider in bd_1.
+void draw_panel_header(const char* title, const char* count_hint) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
                           ImVec2(s(tokens::sp_4), 0.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_1));
+    ImGui::PushID(title);
     ImGui::BeginChild("##phdr", ImVec2(0.0f, s(tokens::panel_hdr_h)),
                        ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
     const float pad_y = (s(tokens::panel_hdr_h) - ImGui::GetTextLineHeight()) * 0.5f;
@@ -260,10 +263,10 @@ void draw_panel_placeholder(const char* title, const char* count_hint) {
     if (count_hint && *count_hint) {
         ImGui::SameLine(0.0f, s(tokens::sp_3));
         ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ScopedMonoFont _;
         ImGui::TextUnformatted(count_hint);
         ImGui::PopStyleColor();
     }
-    // 1 px bottom divider matches .panel-hdr in styles.css.
     const ImVec2 p0 = ImGui::GetWindowPos();
     const ImVec2 p1 = ImVec2(p0.x + ImGui::GetWindowWidth(),
                               p0.y + ImGui::GetWindowHeight());
@@ -271,20 +274,316 @@ void draw_panel_placeholder(const char* title, const char* count_hint) {
         ImVec2(p0.x, p1.y - 0.5f), ImVec2(p1.x, p1.y - 0.5f),
         tokens::bd_1, 1.0f);
     ImGui::EndChild();
+    ImGui::PopID();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+}
 
-    // Body — M18 placeholder text. Real content arrives in M19+.
+// ──── Outliner ──────────────────────────────────────────────────────────
+// One tree row matching .tree-row in the design: 22 px high, hover bg_2,
+// selected bg = acc_bg with a 2 px amber inset stripe on the left edge,
+// optional badge (mono, fg_3, bg_2-on-bd_2 chip), eye visibility icon.
+bool tree_row(int depth, const char* label, bool selected,
+               const char* badge = nullptr) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                          ImVec2(s(tokens::sp_2), s(tokens::sp_1)));
+    ImGui::PushStyleColor(ImGuiCol_Header,        col(tokens::acc_bg));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, col(tokens::bg_2));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  col(tokens::acc_bg_2));
+    ImGui::PushStyleColor(ImGuiCol_Text,
+        col(selected ? tokens::acc : tokens::fg_1));
+
+    const float row_h = s(tokens::tree_row_h);
+    ImGui::PushID(label);
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const ImVec2 size   = ImVec2(ImGui::GetContentRegionAvail().x, row_h);
+    const bool clicked  = ImGui::Selectable("##row", selected,
+                                              ImGuiSelectableFlags_AllowOverlap,
+                                              size);
+
+    // 2 px amber inset stripe on selected row.
+    if (selected) {
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            cursor,
+            ImVec2(cursor.x + s(2.0f), cursor.y + row_h),
+            tokens::acc);
+    }
+
+    // Label drawn on top of the Selectable.
+    const float indent_x = s(static_cast<float>(depth) * 14.0f + 6.0f);
+    ImGui::SetCursorScreenPos(ImVec2(cursor.x + indent_x,
+                                       cursor.y + (row_h - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::TextUnformatted(label);
+
+    // Optional badge: mono chip floated to the right.
+    if (badge) {
+        ScopedMonoFont _;
+        const float bw = ImGui::CalcTextSize(badge).x + s(tokens::sp_3) * 2.0f;
+        ImGui::SetCursorScreenPos(ImVec2(cursor.x + size.x - bw - s(tokens::sp_4),
+                                           cursor.y + (row_h - ImGui::GetTextLineHeight()) * 0.5f
+                                                     - s(tokens::sp_1)));
+        const float bh = ImGui::GetTextLineHeight() + s(tokens::sp_1) * 2.0f;
+        const ImVec2 b0 = ImGui::GetCursorScreenPos();
+        const ImVec2 b1 = ImVec2(b0.x + bw, b0.y + bh);
+        const ImU32 bg = selected
+            ? IM_COL32(0xE8, 0xA2, 0x4A, 0x14)
+            : tokens::bg_2;
+        const ImU32 bd = selected
+            ? IM_COL32(0xE8, 0xA2, 0x4A, 0x4D)
+            : tokens::bd_2;
+        const ImU32 fg = selected ? tokens::acc : tokens::fg_3;
+        auto* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(b0, b1, bg, s(tokens::r_1));
+        dl->AddRect(b0, b1, bd, s(tokens::r_1));
+        ImGui::SetCursorScreenPos(ImVec2(b0.x + s(tokens::sp_3),
+                                           b0.y + s(tokens::sp_1)));
+        ImGui::PushStyleColor(ImGuiCol_Text, col(fg));
+        ImGui::TextUnformatted(badge);
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::PopID();
+    ImGui::PopStyleColor(4);
+    ImGui::PopStyleVar();
+    return clicked;
+}
+
+void draw_outliner(const EngineState& state, Selection& sel) {
+    draw_panel_header("OUTLINER", "7 roots * scene");
+
+    ImGui::BeginChild("##otree", ImVec2(0, 0), ImGuiChildFlags_None,
+                       ImGuiWindowFlags_None);
+
+    if (tree_row(0, "procedural_demo", sel.kind == SelectionKind::Scene, "scene")) {
+        sel.kind = SelectionKind::Scene;
+    }
+    if (tree_row(1, "Spheres",
+                  sel.kind == SelectionKind::SpheresGroup, "5")) {
+        sel.kind = SelectionKind::SpheresGroup;
+    }
+    for (std::uint32_t i = 0; i < state.sphere_count; ++i) {
+        const bool selected = sel.kind == SelectionKind::Sphere && sel.index == i;
+        const char* name = (state.spheres && state.spheres[i].name)
+                            ? state.spheres[i].name
+                            : "Sphere";
+        if (tree_row(2, name, selected)) {
+            sel.kind  = SelectionKind::Sphere;
+            sel.index = i;
+        }
+    }
+
+    char cubebadge[16];
+    std::snprintf(cubebadge, sizeof(cubebadge), "%u", state.cubes_total);
+    if (tree_row(1, "Cube Field",
+                  sel.kind == SelectionKind::CubeField, cubebadge)) {
+        sel.kind = SelectionKind::CubeField;
+    }
+    char pbadge[16];
+    std::snprintf(pbadge, sizeof(pbadge), "%u", state.particles);
+    if (tree_row(1, "Particle Emitter",
+                  sel.kind == SelectionKind::ParticleEmitter, pbadge)) {
+        sel.kind = SelectionKind::ParticleEmitter;
+    }
+    char tbadge[16];
+    std::snprintf(tbadge, sizeof(tbadge), "%u bones", state.tube_bone_count);
+    if (tree_row(1, "Skinned Tube",
+                  sel.kind == SelectionKind::SkinnedTube, tbadge)) {
+        sel.kind = SelectionKind::SkinnedTube;
+    }
+    if (tree_row(1, "Sun Light", sel.kind == SelectionKind::SunLight)) {
+        sel.kind = SelectionKind::SunLight;
+    }
+    if (tree_row(1, "Editor Camera", sel.kind == SelectionKind::Camera)) {
+        sel.kind = SelectionKind::Camera;
+    }
+
+    ImGui::EndChild();
+}
+
+// ──── Inspector ─────────────────────────────────────────────────────────
+void prop_row_begin(const char* label) {
+    // 88 px label column + 1fr ctrl column per .prop in styles.css.
+    constexpr float label_w_logical = 88.0f;
+    ImGui::PushID(label);
+    ImGui::Columns(2, nullptr, false);
+    ImGui::SetColumnWidth(0, s(label_w_logical));
+    ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_3));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::NextColumn();
+}
+void prop_row_end() {
+    ImGui::Columns(1);
+    ImGui::PopID();
+}
+
+// Slider styled per .slider in the design — track fills with acc_bg_2 +
+// dimmer right edge in acc_dim, numeric input on the right.
+void styled_slider(const char* id, float* value, float vmin, float vmax,
+                    const char* fmt = "%.2f") {
+    ImGui::PushID(id);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, s(tokens::r_0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,        col(tokens::bg_2));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, col(tokens::bg_3));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  col(tokens::bg_3));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab,     col(tokens::acc_bg_2));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, col(tokens::acc));
+    ImGui::PushStyleColor(ImGuiCol_Text,           col(tokens::fg_1));
+    ScopedMonoFont _;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##sl", value, vmin, vmax, fmt,
+                        ImGuiSliderFlags_AlwaysClamp);
+    ImGui::PopStyleColor(6);
+    ImGui::PopStyleVar();
+    ImGui::PopID();
+}
+
+void inspector_hero(const char* name, const char* path, ImU32 swatch,
+                     bool is_sphere) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::BeginChild("##insphero", ImVec2(0, s(54.0f)),
+                       ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+
+    auto* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float sw = s(36.0f);
+    if (is_sphere) {
+        dl->AddCircleFilled(ImVec2(p0.x + sw * 0.5f, p0.y + sw * 0.5f),
+                              sw * 0.5f, swatch, 24);
+        dl->AddCircle(ImVec2(p0.x + sw * 0.5f, p0.y + sw * 0.5f),
+                       sw * 0.5f, tokens::bd_3, 24, 1.0f);
+    } else {
+        dl->AddRectFilled(p0, ImVec2(p0.x + sw, p0.y + sw), swatch);
+        dl->AddRect(p0, ImVec2(p0.x + sw, p0.y + sw), tokens::bd_3);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + sw + s(tokens::sp_5), p0.y));
+    ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_1));
+    ImGui::TextUnformatted(name);
+    ImGui::PopStyleColor();
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + sw + s(tokens::sp_5),
+                                       p0.y + ImGui::GetTextLineHeight() + s(2.0f)));
+    {
+        ScopedMonoFont _;
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_3));
+        ImGui::TextUnformatted(path);
+        ImGui::PopStyleColor();
+    }
+
+    // Hairline divider on the bottom edge.
+    const ImVec2 pp0 = ImGui::GetWindowPos();
+    const ImVec2 pp1 = ImVec2(pp0.x + ImGui::GetWindowWidth(),
+                                pp0.y + ImGui::GetWindowHeight());
+    dl->AddLine(ImVec2(pp0.x, pp1.y - 0.5f),
+                 ImVec2(pp1.x, pp1.y - 0.5f),
+                 tokens::bd_1, 1.0f);
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void section(const char* title, bool* open) {
+    ImGui::PushStyleColor(ImGuiCol_Header,        col(tokens::bg_1));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, col(tokens::bg_2));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  col(tokens::bg_2));
+    ImGui::PushStyleColor(ImGuiCol_Text,          col(tokens::fg_2));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(s(tokens::sp_5), s(4.0f)));
+    // ALL-CAPS section header per .section-hdr.
+    ImGui::SetNextItemOpen(*open, ImGuiCond_Always);
+    if (ImGui::CollapsingHeader(title)) {
+        *open = true;
+    } else {
+        *open = false;
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+}
+
+void draw_inspector_sphere(SphereView& sv, std::uint32_t idx) {
+    const ImU32 swatch_col = sv.albedo
+        ? IM_COL32(static_cast<int>(sv.albedo[0] * 255.0f),
+                    static_cast<int>(sv.albedo[1] * 255.0f),
+                    static_cast<int>(sv.albedo[2] * 255.0f), 255)
+        : tokens::fg_3;
+    char buf[32]; std::snprintf(buf, sizeof(buf), "k_spheres[%u]", idx);
+    inspector_hero(sv.name ? sv.name : "Sphere", buf, swatch_col, true);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(s(tokens::sp_5), s(tokens::sp_4)));
+    ImGui::BeginChild("##inspbody", ImVec2(0, 0));
+
+    static bool transform_open = true;
+    static bool material_open  = true;
+
+    section("TRANSFORM", &transform_open);
+    if (transform_open) {
+        ScopedMonoFont _;
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
+        ImGui::Text("position  %.2f, %.2f, %.2f",
+                     static_cast<double>(sv.position[0]),
+                     static_cast<double>(sv.position[1]),
+                     static_cast<double>(sv.position[2]));
+        ImGui::PopStyleColor();
+    }
+
+    section("MATERIAL", &material_open);
+    if (material_open && sv.albedo) {
+        prop_row_begin("albedo");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::ColorEdit3("##albedo", sv.albedo,
+                            ImGuiColorEditFlags_NoInputs |
+                            ImGuiColorEditFlags_AlphaPreviewHalf);
+        prop_row_end();
+
+        prop_row_begin("metallic");
+        styled_slider("##metallic", sv.metallic, 0.0f, 1.0f, "%.2f");
+        prop_row_end();
+
+        prop_row_begin("roughness");
+        styled_slider("##roughness", sv.roughness, 0.04f, 1.0f, "%.2f");
+        prop_row_end();
+
+        prop_row_begin("ao");
+        styled_slider("##ao", sv.ao, 0.0f, 1.0f, "%.2f");
+        prop_row_end();
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void draw_inspector_empty(const char* line) {
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(s(tokens::sp_5), 14.0f));
-    ImGui::TextWrapped("M18 placeholder. M19 wires this panel up.");
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(s(tokens::sp_5), s(14.0f)));
+    ImGui::TextWrapped("%s", line);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 }
 
+void draw_inspector(const EngineState& state, Selection& sel) {
+    draw_panel_header("INSPECTOR", "");
+    switch (sel.kind) {
+        case SelectionKind::Sphere:
+            if (state.spheres && sel.index < state.sphere_count) {
+                draw_inspector_sphere(state.spheres[sel.index], sel.index);
+            } else {
+                draw_inspector_empty("Sphere not available.");
+            }
+            break;
+        case SelectionKind::None:
+            draw_inspector_empty("Nothing selected.\nClick an item in the Outliner.");
+            break;
+        default:
+            draw_inspector_empty("Inspector for this entity arrives in M19c.");
+            break;
+    }
+}
+
 }  // namespace
 
-void draw_chrome(const EngineState& state) {
+void draw_chrome(const EngineState& state, Selection& sel) {
     // Full-screen invisible window holding the entire editor chrome. ImGui's
     // viewport drives the size; we cover the swapchain.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -319,7 +618,7 @@ void draw_chrome(const EngineState& state) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_1));
     ImGui::BeginChild("##left", panel_size,
                        ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-    draw_panel_placeholder("OUTLINER", "0 roots · 0 obj");
+    draw_outliner(state, sel);
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, 0.0f);
@@ -339,7 +638,7 @@ void draw_chrome(const EngineState& state) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_1));
     ImGui::BeginChild("##right", ImVec2(s(tokens::right_panel_w), total_h),
                        ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-    draw_panel_placeholder("INSPECTOR", "");
+    draw_inspector(state, sel);
     ImGui::EndChild();
     ImGui::PopStyleColor();
 

@@ -55,7 +55,7 @@ void Editor::render(const EngineState& state, rhi::RenderEncoder& enc,
                          color_texture_native,
                          /*depth_texture=*/nullptr);
     ImGui::NewFrame();
-    draw_chrome(state);
+    draw_chrome(state, selection_);
     ImGui::Render();
     platform::render_into_encoder(command_buffer_native, enc.native());
 }
