@@ -1,5 +1,6 @@
 #include "mge/rhi/encoder.h"
 
+#include "mge/rhi/acceleration_structure.h"
 #include "mge/rhi/buffer.h"
 #include "mge/rhi/pipeline.h"
 #include "mge/rhi/sampler.h"
@@ -55,6 +56,19 @@ void RenderEncoder::set_fragment_texture(Texture& texture, std::uint32_t slot) {
 void RenderEncoder::set_fragment_sampler(Sampler& sampler, std::uint32_t slot) {
     auto* enc = static_cast<MTL::RenderCommandEncoder*>(native_);
     enc->setFragmentSamplerState(static_cast<MTL::SamplerState*>(sampler.native()), slot);
+}
+
+void RenderEncoder::set_fragment_acceleration_structure(AccelerationStructure& as,
+                                                          std::uint32_t slot) {
+    auto* enc = static_cast<MTL::RenderCommandEncoder*>(native_);
+    enc->setFragmentAccelerationStructure(
+        static_cast<MTL::AccelerationStructure*>(as.native()), slot);
+}
+
+void RenderEncoder::use_fragment_acceleration_structure(AccelerationStructure& as) {
+    auto* enc = static_cast<MTL::RenderCommandEncoder*>(native_);
+    enc->useResource(static_cast<MTL::AccelerationStructure*>(as.native()),
+                      MTL::ResourceUsageRead, MTL::RenderStageFragment);
 }
 
 void RenderEncoder::set_viewport(Viewport vp) {

@@ -17,6 +17,7 @@ add_library(mge_rhi_metal STATIC
     src/pipeline.cpp
     src/swapchain.cpp
     src/offscreen_readback.cpp
+    src/acceleration_structure.cpp
 )
 
 target_include_directories(mge_rhi_metal

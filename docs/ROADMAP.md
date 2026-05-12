@@ -130,7 +130,19 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
   - [—] **Particle sorting for blended overlap** (deferred to M12.b — additive blend hides ordering issues for now).
   - [—] **Soft particles via depth read** (deferred to M12.b — needs sampling the scene depth in the particle fragment shader; trivial add when motivated).
   - [—] **First-class FG buffer resources** (tracked as `P1-FG-BUFFER-001`).
-- [ ] M13 — Ray tracing (shadows + reflections, hybrid)
+- [x] **M13 — Ray tracing (shadows + reflections, hybrid)**
+  - [x] **RHI acceleration structures** — `AccelerationStructure` opaque type, `PrimitiveAccelDesc` / `InstanceAccelDesc` builders, `Device::build_acceleration_structure(Queue&, ...)` blocking helpers for both BLAS and TLAS. Metal backend wraps `MTL::PrimitiveAccelerationStructureDescriptor` / `MTL::InstanceAccelerationStructureDescriptor` + `MTL::AccelerationStructureCommandEncoder`. ADR-0009.
+  - [x] **Fragment AS binding** — `RenderEncoder::set_fragment_acceleration_structure(slot)` + `use_fragment_acceleration_structure` for BLAS residency. `DeviceInfo::supports_ray_tracing_from_render` exposed.
+  - [x] **Integration test** — `test_raytrace.cpp` builds a one-triangle BLAS + identity-instance TLAS, fires a fragment-stage ray query from each pixel of a 64×64 RT, asserts center hits (green) and corners miss (red).
+  - [x] **Scene BVH** — hello_metal builds per-mesh BLAS for sphere / cube / ground at startup, then a TLAS over all 5 spheres + ground + every cube (~1018 instances on a 32×32 grid).
+  - [x] **Inline RT shadows** — `lighting_rt_fs` fires a shadow ray from the surface point toward the sun with `accept_any_intersection(true)`. Replaces CSM PCF in the lit path. Crisp pixel-perfect shadows, no shadow-map artifacts. Fall back to CSM via `--no-rt`.
+  - [x] **RT reflections for metals** — metallic surfaces fire a reflection ray. On miss → sky gradient (also lit by sun halo). On hit → approximate hit shading (neutral albedo + sun-visibility check + ambient). Strength is `metallic * reflection_strength` (default 0.65).
+  - [x] **Sky background** — `lighting_rt_fs` samples a soft horizon gradient with sun halo when the depth-fail discard would otherwise leave a black clear color showing through (closes the "black sky band" reported in M11).
+  - [x] M11 sphere wobble removed (the static TLAS would have desynced from a rotating-around-origin transform). Sim still ticks.
+  - [—] **Per-frame TLAS refit** (M13.b) — would unlock animated scenes. Today's blocking builder is fine for a static TLAS but stalls CPU on rebuild.
+  - [—] **Material-aware hit shading** (M13.c) — needs a full RT pipeline with closest-hit programs, or per-instance material indirection through user-data + a probe lookup.
+  - [—] **Soft shadows / area lights** — single sample per pixel today. TAA + multiple samples = future work.
+  - [—] **CSM shadow pass removal** — pass + map are vestigial when RT is on. Kept for `--no-rt` fallback (P1-RT-CSM-FALLBACK-001).
 - [ ] M14 — GPU occlusion culling (depth pyramid + HZB) [needs compute, unblocked by M12]
 - [ ] M15 — LOD system
 - [ ] M16 — Skeletal animation (mesh skinning + animation graph)

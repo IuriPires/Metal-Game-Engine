@@ -289,6 +289,30 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P1-RT-STATIC-TLAS-001] TLAS is static (built once at startup)
+- **What**: M13 builds the scene TLAS once during `DeferredRenderer::build_tlas` and never updates it. Moving / rotating / spawning geometry won't be reflected in RT shadows or reflections. The M11 sphere wobble was removed for this reason.
+- **Why now**: The blocking builder we have today would stall CPU on every frame to rebuild ~1k instances. Adding a non-blocking acceleration-structure command encoder + FrameGraph integration is M13.b scope.
+- **Cost if left**: All dynamic scenes (animated transforms, streamed-in geometry) are locked out of RT.
+- **Fix path**: Add `AccelStructEncoder` RHI type. Distinguish refit (cheap, requires unchanged topology) from rebuild. Wire into FrameGraph as a pre-frame pass when a TLAS is marked dirty.
+- **Owner**: rhi + frame_graph
+- **Created**: 2026-05-12
+
+### [P1-RT-CSM-FALLBACK-001] CSM shadow pass still runs when RT is active
+- **What**: When `rt_active` is true the lighting pass uses the RT lighting PSO and ignores the shadow map, but the `shadow` FG pass + 2048² Depth32Float shadow map still get built and rendered every frame.
+- **Why now**: Kept as a fallback for `--no-rt` (and for platforms without RT support, when we get cross-platform).
+- **Cost if left**: ~0.3 ms GPU + 16 MB VRAM wasted every frame the demo is RT.
+- **Fix path**: Conditionally add the shadow pass to the FrameGraph only when `rt_active` is false. The `shadow_pso` / `shadow_sampler` can stay allocated.
+- **Owner**: demo + frame_graph
+- **Created**: 2026-05-12
+
+### [P1-RT-HIT-MATERIAL-001] Reflection hit shading is approximate
+- **What**: `lighting_rt_fs` reflection branch doesn't fetch the hit-point material or geometry — it uses a neutral `albedo=0.7` and approximates lighting with a sun-visibility check. So a metallic sphere reflects "the abstract world lit by sun" rather than "the actual cube that the ray hit".
+- **Why now**: Real hit shading needs either a full RT pipeline (closest-hit shaders + shader binding table) or per-instance material lookup tables threaded into the inline ray query.
+- **Cost if left**: Reflections look uniform; can't distinguish reflecting "blue cube" vs "pink cube".
+- **Fix path**: Either (a) switch to a full RT pipeline with closest-hit functions, or (b) pack a per-instance material index into `MTL::AccelerationStructureInstanceDescriptor::userID`, build a global material buffer indexed by it, and look it up from the hit data.
+- **Owner**: renderer/lighting
+- **Created**: 2026-05-12
+
 ### [P1-PARTICLES-DEPTH-001] No depth test / soft particles
 - **What**: Particle render pass has no depth attachment, so particles draw over scene geometry regardless of z. Visually fine for fire over the scene; wrong for particles meant to be occluded by cubes.
 - **Why now**: Particle pass runs after tonemap (which writes to the backbuffer, not the HDR depth). Re-importing the gbuffer depth as a read texture is a small change but pulls in FG-buffer-handle thinking, so deferring.

@@ -38,7 +38,9 @@ DeviceInfo Device::info() const {
         i.name = name->utf8String();
     }
     i.has_unified_memory   = const_cast<MTL::Device*>(dev)->hasUnifiedMemory();
-    i.supports_ray_tracing = const_cast<MTL::Device*>(dev)->supportsRaytracing();
+    i.supports_ray_tracing             = const_cast<MTL::Device*>(dev)->supportsRaytracing();
+    i.supports_ray_tracing_from_render =
+        const_cast<MTL::Device*>(dev)->supportsRaytracingFromRender();
     i.low_power            = const_cast<MTL::Device*>(dev)->lowPower();
     return i;
 }

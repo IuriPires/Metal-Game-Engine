@@ -10,6 +10,7 @@
 
 namespace mge::rhi {
 
+class AccelerationStructure;
 class Buffer;
 class Texture;
 class Sampler;
@@ -61,6 +62,10 @@ public:
     void set_fragment_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset = 0);
     void set_fragment_texture(Texture& texture, std::uint32_t slot);
     void set_fragment_sampler(Sampler& sampler, std::uint32_t slot);
+    void set_fragment_acceleration_structure(AccelerationStructure& as, std::uint32_t slot);
+    // Mark a BLAS as referenced so Metal keeps it resident during the pass.
+    // Required for every primitive AS that the bound TLAS references.
+    void use_fragment_acceleration_structure(AccelerationStructure& as);
     void set_viewport(Viewport vp);
 
     void draw(std::uint32_t vertex_count, std::uint32_t instance_count = 1,

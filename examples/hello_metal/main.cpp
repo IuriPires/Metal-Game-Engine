@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,6 +60,7 @@ struct Args {
     bool          paused     = false;
     bool          demo_mode  = false;  // cycle pause/slowmo/fast-fwd for visual demo
     bool          no_overlay = false;  // disable profiling overlay
+    bool          no_rt      = false;  // disable RT shadows + reflections (fall back to CSM)
 };
 
 Args parse_args(int argc, char** argv) {
@@ -88,6 +90,8 @@ Args parse_args(int argc, char** argv) {
             a.demo_mode = true;
         } else if (s == "--no-overlay") {
             a.no_overlay = true;
+        } else if (s == "--no-rt") {
+            a.no_rt = true;
         }
     }
     return a;
@@ -419,6 +423,185 @@ constexpr const char* k_lighting_msl = R"(
         float3 direct  = (diffuse + specular) * u.sun_color.rgb * NoL * shadow;
         float3 ambient = u.ambient.rgb * albedo * ao;
         return float4(direct + ambient, 1.0);
+    }
+)";
+
+// ---------- M13 — Ray-traced lighting ----------
+//
+// Same deferred lighting math as `k_lighting_msl`, but the shadow term comes
+// from an inline ray query against the TLAS, and metallic surfaces also fire
+// a reflection ray that returns a hit albedo (approximated) or the sky
+// gradient when nothing is hit.
+constexpr const char* k_lighting_rt_msl = R"(
+    #include <metal_stdlib>
+    #include <metal_raytracing>
+    using namespace metal;
+    using namespace raytracing;
+    constant float PI = 3.14159265358979323846;
+
+    struct LightingConstants {
+        float4x4 view_proj_inv;
+        float4x4 light_view_proj;
+        float4   camera_ws;
+        float4   sun_dir_ws;
+        float4   sun_color;
+        float4   ambient;
+        float4   shadow_params;   // .x = unused, .y = bias, .z = reflection_strength
+    };
+
+    struct VSOut { float4 position [[position]]; float2 uv; };
+
+    vertex VSOut lighting_rt_vs(uint vid [[vertex_id]]) {
+        float2 uv = float2((vid << 1) & 2, vid & 2);
+        VSOut o;
+        o.position = float4(uv * 2.0 - 1.0, 0.0, 1.0);
+        o.uv       = float2(uv.x, 1.0 - uv.y);
+        return o;
+    }
+
+    float3 octa_decode(float2 e) {
+        float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
+        if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * float2(n.x >= 0 ? 1 : -1, n.y >= 0 ? 1 : -1);
+        return normalize(n);
+    }
+    float D_GGX(float NoH, float a2) {
+        float f = (NoH * a2 - NoH) * NoH + 1.0;
+        return a2 / (PI * f * f);
+    }
+    float V_SmithCorrelated(float NoV, float NoL, float a) {
+        float a2 = a * a;
+        float Lv = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+        float Lz = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+        return 0.5 / max(Lv + Lz, 1e-5);
+    }
+    float3 F_Schlick(float u, float3 F0) {
+        return F0 + (1.0 - F0) * pow(1.0 - u, 5.0);
+    }
+
+    // Sky color for ray misses — soft horizon gradient aligned with the sun.
+    float3 sky(float3 dir, float3 sun_dir) {
+        float  t       = saturate(dir.y * 0.5 + 0.5);
+        float3 horizon = float3(0.50, 0.55, 0.62);
+        float3 zenith  = float3(0.06, 0.12, 0.28);
+        float3 col     = mix(horizon, zenith, t);
+        // Faint sun halo
+        float d = saturate(dot(dir, -normalize(sun_dir)));
+        col += pow(d, 32.0) * float3(1.2, 0.9, 0.6) * 0.4;
+        return col;
+    }
+
+    // Inline visibility ray. Returns 1.0 in light, 0.0 in shadow.
+    float trace_visibility(instance_acceleration_structure tlas,
+                            float3 origin, float3 dir, float tmax) {
+        ray r;
+        r.origin       = origin;
+        r.direction    = dir;
+        r.min_distance = 0.001;
+        r.max_distance = tmax;
+        intersector<instancing> isect;
+        isect.assume_geometry_type(geometry_type::triangle);
+        isect.accept_any_intersection(true);     // shadow ray: any hit ends it
+        auto result = isect.intersect(r, tlas);
+        return result.type == intersection_type::triangle ? 0.0 : 1.0;
+    }
+
+    fragment float4 lighting_rt_fs(VSOut in [[stage_in]],
+                                     texture2d<float> gb0 [[texture(0)]],
+                                     texture2d<float> gb1 [[texture(1)]],
+                                     depth2d<float>   dt  [[texture(2)]],
+                                     sampler          s   [[sampler(0)]],
+                                     device const LightingConstants& u [[buffer(0)]],
+                                     instance_acceleration_structure tlas [[buffer(1)]]) {
+        float depth = dt.sample(s, in.uv);
+        if (depth >= 1.0) {
+            // Sky: reconstruct view ray and sample the sky gradient directly.
+            float4 ndc = float4(in.uv.x * 2.0 - 1.0,
+                                1.0 - in.uv.y * 2.0,
+                                1.0, 1.0);
+            float4 ws  = u.view_proj_inv * ndc;
+            float3 dir = normalize(ws.xyz / ws.w - u.camera_ws.xyz);
+            return float4(sky(dir, u.sun_dir_ws.xyz), 1.0);
+        }
+
+        float4 ndc = float4(in.uv.x * 2.0 - 1.0,
+                            1.0 - in.uv.y * 2.0,
+                            depth, 1.0);
+        float4 ws  = u.view_proj_inv * ndc;
+        float3 P   = ws.xyz / ws.w;
+
+        float4 c0 = gb0.sample(s, in.uv);
+        float4 c1 = gb1.sample(s, in.uv);
+        float3 albedo    = c0.rgb;
+        float  ao        = c0.a;
+        float3 N         = octa_decode(c1.xy);
+        float  roughness = c1.z;
+        float  metallic  = c1.w;
+
+        float a  = roughness * roughness;
+        float a2 = a * a;
+
+        float3 V = normalize(u.camera_ws.xyz - P);
+        float3 L = -normalize(u.sun_dir_ws.xyz);
+        float3 H = normalize(V + L);
+        float  NoL = saturate(dot(N, L));
+        float  NoV = saturate(dot(N, V));
+        float  NoH = saturate(dot(N, H));
+        float  VoH = saturate(dot(V, H));
+
+        float3 F0       = mix(float3(0.04), albedo, metallic);
+        float3 F        = F_Schlick(VoH, F0);
+        float  D        = D_GGX(NoH, a2);
+        float  Vt       = V_SmithCorrelated(NoV, NoL, a);
+        float3 specular = D * Vt * F;
+        float3 kD       = (1.0 - F) * (1.0 - metallic);
+        float3 diffuse  = kD * albedo / PI;
+
+        // RT shadow: ray from the surface toward the sun, any-hit-stops.
+        float bias   = max(u.shadow_params.y, 0.0005);
+        float3 sP    = P + N * bias;
+        float shadow = (NoL > 0.0)
+            ? trace_visibility(tlas, sP, L, 200.0)
+            : 0.0;
+
+        float3 direct  = (diffuse + specular) * u.sun_color.rgb * NoL * shadow;
+        float3 ambient = u.ambient.rgb * albedo * ao;
+        float3 color   = direct + ambient;
+
+        // RT reflection for metallic surfaces. Fire one ray; on miss use sky,
+        // on hit approximate the hit shading with sun visibility + sky ambient.
+        if (metallic > 0.5) {
+            float3 R = reflect(-V, N);
+            ray rr;
+            rr.origin       = P + N * 0.001;
+            rr.direction    = R;
+            rr.min_distance = 0.001;
+            rr.max_distance = 100.0;
+            intersector<instancing> isect;
+            isect.assume_geometry_type(geometry_type::triangle);
+            auto rh = isect.intersect(rr, tlas);
+
+            float3 refl_color;
+            if (rh.type == intersection_type::triangle) {
+                // Hit point. We don't have per-triangle materials in v1, so
+                // approximate: pick a neutral albedo, light it with sun
+                // visibility + ambient sky.
+                float3 hit_pos = rr.origin + rr.direction * rh.distance;
+                float3 hit_n   = normalize(-R);   // crude — we don't fetch the
+                                                   // hit normal in v1.
+                float vis = trace_visibility(tlas, hit_pos, L, 200.0);
+                float3 hit_albedo = float3(0.7);
+                float3 hit_diff   = hit_albedo / PI;
+                float3 hit_amb    = u.ambient.rgb * hit_albedo;
+                float hit_NoL     = saturate(dot(hit_n, L));
+                refl_color = hit_diff * u.sun_color.rgb * hit_NoL * vis + hit_amb;
+            } else {
+                refl_color = sky(R, u.sun_dir_ws.xyz);
+            }
+            float refl_strength = clamp(u.shadow_params.z, 0.0, 1.0);
+            color = mix(color, refl_color, metallic * refl_strength);
+        }
+
+        return float4(color, 1.0);
     }
 )";
 
@@ -852,6 +1035,14 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::Buffer>          particle_sim_buf;      // SimU per frame
     std::unique_ptr<mge::rhi::Buffer>          particle_render_buf;   // RenderU per frame
 
+    // M13 — Ray tracing
+    std::unique_ptr<mge::rhi::Shader>                lighting_rt_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline>        lighting_rt_pso;
+    std::unique_ptr<mge::rhi::AccelerationStructure> blas_sphere;
+    std::unique_ptr<mge::rhi::AccelerationStructure> blas_cube;
+    std::unique_ptr<mge::rhi::AccelerationStructure> blas_ground;
+    std::unique_ptr<mge::rhi::AccelerationStructure> tlas;
+
     std::unique_ptr<mge::rhi::Buffer>  instance_buf;
     std::size_t                        instance_capacity = 0;
     std::unique_ptr<mge::rhi::Buffer>  frame_buf;
@@ -878,11 +1069,13 @@ struct DeferredRenderer {
             r->device->create_shader_from_msl({k_particle_compute_msl, "particle.compute"});
         r->particle_render_shader  =
             r->device->create_shader_from_msl({k_particle_render_msl,  "particle.render"});
+        r->lighting_rt_shader      =
+            r->device->create_shader_from_msl({k_lighting_rt_msl,      "lighting.rt"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
             !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
             !r->overlay_shader || !r->particle_compute_shader ||
-            !r->particle_render_shader) {
+            !r->particle_render_shader || !r->lighting_rt_shader) {
             return nullptr;
         }
 
@@ -1124,6 +1317,22 @@ struct DeferredRenderer {
             r->lighting_pso            = r->device->create_render_pipeline(pd);
         }
 
+        // RT lighting PSO. Same color target as the rasterized variant — only
+        // the fragment shader differs (ray queries instead of shadow-map PCF).
+        if (r->device->info().supports_ray_tracing_from_render) {
+            RenderPipelineDesc pd;
+            pd.vertex_shader           = r->lighting_rt_shader.get();
+            pd.fragment_shader         = r->lighting_rt_shader.get();
+            pd.vertex_entry            = "lighting_rt_vs";
+            pd.fragment_entry          = "lighting_rt_fs";
+            pd.topology                = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format = PixelFormat::RGBA16Float;
+            pd.num_color_targets       = 1;
+            pd.rasterizer.cull_mode    = CullMode::None;
+            pd.label                   = "lighting.rt.pso";
+            r->lighting_rt_pso         = r->device->create_render_pipeline(pd);
+        }
+
         {
             RenderPipelineDesc pd;
             pd.vertex_shader           = r->tonemap_shader.get();
@@ -1251,7 +1460,90 @@ struct DeferredRenderer {
             !r->particle_step_pso || !r->particle_render_pso) {
             return nullptr;
         }
+
+        // Per-mesh BLAS (sphere, cube, ground). Position is at offset 0 in
+        // PbrVertex (stride 32). Indexed Float32x3 geometry.
+        if (r->device->info().supports_ray_tracing) {
+            auto build_blas = [&](Buffer& vbuf, std::uint32_t vcount, Buffer& ibuf,
+                                   std::uint32_t icount, const char* label) {
+                TriangleGeometryDesc tg;
+                tg.vertex_buffer  = &vbuf;
+                tg.vertex_stride  = sizeof(mge::assets::PbrVertex);
+                tg.vertex_count   = vcount;
+                tg.vertex_format  = VertexFormat::Float32x3;
+                tg.index_buffer   = &ibuf;
+                tg.index_type     = IndexType::UInt32;
+                tg.triangle_count = icount / 3u;
+                tg.opaque         = true;
+                PrimitiveAccelDesc d;
+                d.geometries.push_back(tg);
+                d.label = label;
+                return r->device->build_acceleration_structure(*r->queue, d);
+            };
+            const auto sphere_geom = mge::assets::make_sphere_pbr(20, 32);
+            const auto ground_geom = mge::assets::make_ground_plane_pbr(30.0f);
+            const auto cube_geom   = mge::assets::make_cube_pbr();
+            r->blas_sphere = build_blas(
+                *r->sphere_vbuf, static_cast<std::uint32_t>(sphere_geom.vertices.size()),
+                *r->sphere_ibuf, r->sphere_index_count, "blas.sphere");
+            r->blas_ground = build_blas(
+                *r->ground_vbuf, static_cast<std::uint32_t>(ground_geom.vertices.size()),
+                *r->ground_ibuf, r->ground_index_count, "blas.ground");
+            r->blas_cube   = build_blas(
+                *r->cube_vbuf,   static_cast<std::uint32_t>(cube_geom.vertices.size()),
+                *r->cube_ibuf,   r->cube_index_count,   "blas.cube");
+            if (!r->blas_sphere || !r->blas_ground || !r->blas_cube) {
+                std::fprintf(stderr, "[hello_metal] BLAS build failed\n");
+                return nullptr;
+            }
+        }
+
         return r;
+    }
+
+    // Build the top-level acceleration structure once the scene layout is
+    // known. v1 is static — no refit, no per-frame rebuild. Spheres, ground,
+    // and every cube get one instance.
+    bool build_tlas(std::span<const Sphere> spheres, std::span<const CubeProto> cubes) {
+        using namespace mge::rhi;
+        if (!device->info().supports_ray_tracing) return false;
+        if (!blas_sphere || !blas_cube || !blas_ground) return false;
+
+        InstanceAccelDesc d;
+        d.blas = {blas_sphere.get(), blas_ground.get(), blas_cube.get()};
+        d.label = "scene.tlas";
+
+        auto identity_rotation_3x3 = std::array<float, 9>{
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1};
+        auto make_inst = [](std::uint32_t blas_idx, mge::math::Vec3 t,
+                             std::array<float, 9> rs) {
+            AccelInstance i;
+            i.transform_3x4 = {
+                rs[0], rs[1], rs[2], t.x,
+                rs[3], rs[4], rs[5], t.y,
+                rs[6], rs[7], rs[8], t.z,
+            };
+            i.blas_index = blas_idx;
+            return i;
+        };
+
+        for (const auto& s : spheres) {
+            d.instances.push_back(make_inst(0u, s.position, identity_rotation_3x3));
+        }
+        d.instances.push_back(make_inst(1u, mge::math::Vec3{0.0f, 0.0f, 0.0f},
+                                          identity_rotation_3x3));
+        const std::array<float, 9> cube_scale_3x3{
+            k_cube_half, 0, 0,
+            0, k_cube_half, 0,
+            0, 0, k_cube_half};
+        for (const auto& c : cubes) {
+            d.instances.push_back(make_inst(2u, c.center, cube_scale_3x3));
+        }
+
+        tlas = device->build_acceleration_structure(*queue, d);
+        return tlas != nullptr;
     }
 };
 
@@ -1288,8 +1580,8 @@ void fill_lighting_constants(DeferredRenderer& r, const mge::scene::Camera& cam,
     u.ambient[2]      = 0.18f;
     u.ambient[3]      = 0.0f;
     u.shadow_params[0] = 1.0f / static_cast<float>(k_shadow_size);
-    u.shadow_params[1] = 0.0015f;
-    u.shadow_params[2] = static_cast<float>(k_shadow_size);
+    u.shadow_params[1] = 0.0015f;                                 // RT bias / CSM legacy
+    u.shadow_params[2] = 0.65f;                                   // RT reflection strength
     u.shadow_params[3] = 0.0f;
     std::memcpy(r.lighting_buf->contents(), &u, sizeof(u));
 }
@@ -1329,8 +1621,26 @@ int run_windowed(const Args& a) {
     auto r = DeferredRenderer::create(backbuffer_fmt, instance_cap);
     if (!r) { std::fprintf(stderr, "renderer init failed\n"); return 1; }
     const auto info = r->device->info();
-    std::printf("[hello_metal] device: %s, instance_cap=%zu\n",
-                info.name.c_str(), instance_cap);
+    std::printf("[hello_metal] device: %s, instance_cap=%zu  RT=%s\n",
+                info.name.c_str(), instance_cap,
+                info.supports_ray_tracing_from_render ? "yes" : "no");
+
+    // M13 — build the scene TLAS once. RT lighting flips on at runtime if the
+    // device supports it and --no-rt wasn't passed.
+    const bool rt_available = info.supports_ray_tracing_from_render && !a.no_rt
+                              && r->lighting_rt_pso;
+    bool rt_active = false;
+    if (rt_available) {
+        rt_active = r->build_tlas(std::span<const Sphere>(k_spheres.data(), k_spheres.size()),
+                                   std::span<const CubeProto>(cubes_proto.data(),
+                                                                cubes_proto.size()));
+        std::printf("[hello_metal] RT: %s (TLAS over %zu instances)\n",
+                    rt_active ? "on" : "off (TLAS build failed)",
+                    k_spheres.size() + 1u + cubes_proto.size());
+    } else {
+        std::printf("[hello_metal] RT: off (%s)\n",
+                    a.no_rt ? "--no-rt" : "device unsupported");
+    }
 
     auto swap = r->device->create_swapchain(window.native_layer(), backbuffer_fmt);
     if (!swap) { std::fprintf(stderr, "swapchain init failed\n"); return 1; }
@@ -1413,10 +1723,13 @@ int run_windowed(const Args& a) {
             if (!frame_drawable.valid()) return;
             rendered = true;
 
-        // Interpolated wobble: where the sim WILL be `alpha` of the way to
-        // the next step. Zero when paused (loop.last_alpha() forces 0).
-        const float interp_yaw = sim_yaw + alpha * loop.fixed_dt() * 0.4f;
-        const mge::math::Mat4 wobble = mge::math::rotation_y(interp_yaw);
+        // M13: spheres are static so the rendered scene matches the static
+        // TLAS. The previous M11 wobble around the world origin would have
+        // de-synced RT shadows from the rasterized sphere positions.
+        // `alpha` and `sim_yaw` are kept (sim still ticks, just not visualized
+        // on the spheres).
+        (void)alpha;
+        (void)sim_yaw;
 
         // ---- Profile: instance buffer fill (CPU work) ----
         InstanceData* instances = static_cast<InstanceData*>(r->instance_buf->contents());
@@ -1426,7 +1739,7 @@ int run_windowed(const Args& a) {
         // Spheres at [0..5)
         for (std::size_t i = 0; i < k_spheres.size(); ++i) {
             const auto&     s     = k_spheres[i];
-            const mge::math::Mat4 m = wobble * mge::math::translation(s.position);
+            const mge::math::Mat4 m = mge::math::translation(s.position);
             InstanceData    inst{};
             inst.model       = m;
             inst.model_inv_t = mge::math::transpose(mge::math::inverse(m));
@@ -1712,17 +2025,32 @@ int run_windowed(const Args& a) {
                 pb.read(shadow_map, mge::frame_graph::ResourceUsage::ShaderRead);
                 pb.write_color(hdr, LoadAction::Clear, 0, 0, 0, 1);
             },
-            [&](RenderContext& ctx) {
+            [&, rt_active](RenderContext& ctx) {
                 auto rp = ctx.make_render_pass_desc();
                 RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
-                enc.set_pipeline(*r->lighting_pso);
-                enc.set_fragment_texture(ctx.texture(gb0),        0);
-                enc.set_fragment_texture(ctx.texture(gb1),        1);
-                enc.set_fragment_texture(ctx.texture(depth),      2);
-                enc.set_fragment_texture(ctx.texture(shadow_map), 3);
-                enc.set_fragment_sampler(*r->linear_clamp,        0);
-                enc.set_fragment_sampler(*r->shadow_sampler,      1);
-                enc.set_fragment_buffer(*r->lighting_buf, 0);
+                if (rt_active) {
+                    enc.set_pipeline(*r->lighting_rt_pso);
+                    enc.set_fragment_texture(ctx.texture(gb0),   0);
+                    enc.set_fragment_texture(ctx.texture(gb1),   1);
+                    enc.set_fragment_texture(ctx.texture(depth), 2);
+                    enc.set_fragment_sampler(*r->linear_clamp,   0);
+                    enc.set_fragment_buffer(*r->lighting_buf, 0);
+                    // TLAS at buffer slot 1; mark each BLAS used so Metal
+                    // keeps them resident through the pass.
+                    enc.use_fragment_acceleration_structure(*r->blas_sphere);
+                    enc.use_fragment_acceleration_structure(*r->blas_cube);
+                    enc.use_fragment_acceleration_structure(*r->blas_ground);
+                    enc.set_fragment_acceleration_structure(*r->tlas, 1);
+                } else {
+                    enc.set_pipeline(*r->lighting_pso);
+                    enc.set_fragment_texture(ctx.texture(gb0),        0);
+                    enc.set_fragment_texture(ctx.texture(gb1),        1);
+                    enc.set_fragment_texture(ctx.texture(depth),      2);
+                    enc.set_fragment_texture(ctx.texture(shadow_map), 3);
+                    enc.set_fragment_sampler(*r->linear_clamp,        0);
+                    enc.set_fragment_sampler(*r->shadow_sampler,      1);
+                    enc.set_fragment_buffer(*r->lighting_buf, 0);
+                }
                 enc.draw(3);
             });
 
