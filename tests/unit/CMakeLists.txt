@@ -1,0 +1,25 @@
+# tests/unit
+#
+# Fast doctest-based unit tests. One executable for the whole suite for now;
+# split per subsystem if compile time becomes a problem.
+
+include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
+
+add_executable(mge_unit_tests
+    test_version.cpp
+    test_smoke.cpp
+)
+
+target_link_libraries(mge_unit_tests
+    PRIVATE
+        mge::core
+        doctest::doctest
+        mge_warnings
+        mge_sanitizers
+)
+
+target_compile_features(mge_unit_tests PRIVATE cxx_std_20)
+
+doctest_discover_tests(mge_unit_tests
+    ADD_LABELS 1
+)

@@ -1,0 +1,98 @@
+# Build outputs
+build/
+build-*/
+out/
+cmake-build-*/
+xcode/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# Compiled artifacts
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.dll
+*.exe
+*.lib
+*.app/
+*.dSYM/
+
+# Metal
+*.metallib
+*.air
+*.metalar
+
+# Editor / IDE
+.vscode/
+.idea/
+.cursor/
+.zed/
+*.swp
+*.swo
+*.user
+*~
+
+# macOS
+.DS_Store
+*.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+DerivedData/
+
+# Logs / captures / profiles
+*.log
+*.gputrace
+*.gpubin
+*.trace
+captures/
+profiling/
+
+# Local config overrides
+.env
+.env.local
+CMakeUserPresets.json
+
+# Generated reflection / shaders
+shaders/reflection/*.gen.*
+shaders/compiled/
+
+# Test artifacts
+tests/golden/_actual/
+tests/golden/_diff/
+
+# Reference books (large binaries, possibly copyrighted - kept locally only)
+refs/*.epub
+refs/*.pdf
+refs/*.mobi
+/*.epub
+/*.pdf
+/*.mobi
+
+# Cached Apple downloads (PDFs / zips are large; URLs + SHAs live in INDEX.md)
+external_docs/metal/*.pdf
+external_docs/metal/*.zip
