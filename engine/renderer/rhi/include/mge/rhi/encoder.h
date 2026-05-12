@@ -82,4 +82,41 @@ private:
     PrimitiveTopology topology_ = PrimitiveTopology::TriangleList;
 };
 
+// RAII compute encoder. Same semantics as RenderEncoder: end() is called by the
+// destructor if not invoked manually. The parent command buffer must not be
+// used until the encoder is destroyed.
+class ComputeEncoder {
+public:
+    ~ComputeEncoder();
+    ComputeEncoder(const ComputeEncoder&)            = delete;
+    ComputeEncoder& operator=(const ComputeEncoder&) = delete;
+    ComputeEncoder(ComputeEncoder&&) noexcept;
+    ComputeEncoder& operator=(ComputeEncoder&&) = delete;
+
+    void set_pipeline(ComputePipeline& pipeline);
+    void set_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset = 0);
+    void set_texture(Texture& texture, std::uint32_t slot);
+    void set_sampler(Sampler& sampler, std::uint32_t slot);
+
+    // Threadgroup-count dispatch. `grid_*` is the number of threadgroups along
+    // each axis; `tg_*` is the size of one threadgroup.
+    void dispatch(std::uint32_t grid_x, std::uint32_t grid_y, std::uint32_t grid_z,
+                  std::uint32_t tg_x,   std::uint32_t tg_y,   std::uint32_t tg_z);
+
+    // Thread-count dispatch (Metal-only convenience). Metal computes the
+    // threadgroup count from the total thread counts; works for non-multiples.
+    void dispatch_threads(std::uint32_t threads_x, std::uint32_t threads_y, std::uint32_t threads_z,
+                          std::uint32_t tg_x,      std::uint32_t tg_y,      std::uint32_t tg_z);
+
+    // Explicit end - or just let the destructor do it.
+    void end() noexcept;
+
+    [[nodiscard]] void* native() noexcept { return native_; }
+
+private:
+    friend class CommandBuffer;
+    explicit ComputeEncoder(void* native) noexcept : native_(native) {}
+    void* native_ = nullptr;
+};
+
 }  // namespace mge::rhi

@@ -121,12 +121,20 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
 
 ## Phase 1.5 — Rendering extensions
 
-- [ ] Ray tracing (shadows + reflections, hybrid)
-- [ ] GPU particles (compute-driven)
-- [ ] GPU occlusion culling (depth pyramid + HZB)
-- [ ] LOD system
-- [ ] Skeletal animation (mesh skinning + animation graph)
-- [ ] Skinning compute shader
+- [x] **M12 — Compute pipelines + GPU particles**
+  - [x] **RHI compute surface** — `ComputePipeline`, `ComputeEncoder`, `Device::create_compute_pipeline`, `CommandBuffer::begin_compute_pass`. Metal backend wraps `MTLComputePipelineState` / `MTLComputeCommandEncoder`. `dispatch` (threadgroup-count) and `dispatch_threads` (total-thread-count) entry points. ADR-0008.
+  - [x] **Integration test** — `test_compute.cpp` compiles an inline MSL kernel that fills a Shared buffer with `i*2 + bias`, dispatches, validates from CPU.
+  - [x] **GPU particle system** — 32 768 particles, persistent Storage buffer. Compute kernel does gravity + integration + life decay; respawns dead slots at the emitter (hash-derived random disk + upward velocity). Render pass instances camera-facing billboard quads with additive blend over the tonemapped scene.
+  - [x] **FrameGraph integration** — particle pass declares `write_color(bb, Load)` so WAW edges put it between tonemap and overlay. Compute step lives inside the pass's execute lambda (begin compute, dispatch, end, then begin render), so no first-class FG buffer handle needed yet.
+  - [x] **Demo wiring** — emitter at origin, hot-core → cool-tail color blend, respects `time_scale` and `is_paused` (particles freeze in demo-mode pause). 80/80 tests green; demo holds 120 FPS on M1 Pro at 1k cubes + 32k particles.
+  - [—] **Particle sorting for blended overlap** (deferred to M12.b — additive blend hides ordering issues for now).
+  - [—] **Soft particles via depth read** (deferred to M12.b — needs sampling the scene depth in the particle fragment shader; trivial add when motivated).
+  - [—] **First-class FG buffer resources** (tracked as `P1-FG-BUFFER-001`).
+- [ ] M13 — Ray tracing (shadows + reflections, hybrid)
+- [ ] M14 — GPU occlusion culling (depth pyramid + HZB) [needs compute, unblocked by M12]
+- [ ] M15 — LOD system
+- [ ] M16 — Skeletal animation (mesh skinning + animation graph)
+- [ ] M17 — Skinning compute shader [unblocked by M12]
 
 ## Phase 2 — Systems
 

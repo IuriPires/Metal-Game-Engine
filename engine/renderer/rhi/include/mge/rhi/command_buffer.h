@@ -17,7 +17,8 @@ public:
     CommandBuffer(CommandBuffer&&) noexcept;
     CommandBuffer& operator=(CommandBuffer&&) = delete;
 
-    [[nodiscard]] RenderEncoder begin_render_pass(const RenderPassDesc& desc);
+    [[nodiscard]] RenderEncoder  begin_render_pass(const RenderPassDesc& desc);
+    [[nodiscard]] ComputeEncoder begin_compute_pass(const std::string& label = "");
 
     void present(SwapchainFrame& frame);
 

@@ -15,6 +15,7 @@ add_executable(mge_integration_tests
     test_lambert_cube.cpp
     test_frame_graph.cpp
     test_frame_graph_execute.cpp
+    test_compute.cpp
 )
 
 target_link_libraries(mge_integration_tests

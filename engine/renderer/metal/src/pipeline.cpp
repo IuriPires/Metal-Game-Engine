@@ -13,4 +13,10 @@ RenderPipeline::~RenderPipeline() {
     }
 }
 
+ComputePipeline::~ComputePipeline() {
+    if (native_ != nullptr) {
+        static_cast<MTL::ComputePipelineState*>(native_)->release();
+    }
+}
+
 }  // namespace mge::rhi

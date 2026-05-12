@@ -96,4 +96,40 @@ private:
     std::string       label_;
 };
 
+struct ComputePipelineDesc {
+    Shader*     compute_shader = nullptr;
+    std::string compute_entry  = "compute_main";
+    std::string label;
+};
+
+class ComputePipeline {
+public:
+    ~ComputePipeline();
+    ComputePipeline(const ComputePipeline&)            = delete;
+    ComputePipeline& operator=(const ComputePipeline&) = delete;
+
+    [[nodiscard]] const std::string& label() const noexcept { return label_; }
+    [[nodiscard]] void*              native() noexcept { return native_; }
+    [[nodiscard]] const void*        native() const noexcept { return native_; }
+
+    // GPU SIMD width (e.g. 32 on Apple GPU). Useful for picking threadgroup sizes.
+    [[nodiscard]] std::uint32_t thread_execution_width() const noexcept { return simd_width_; }
+
+    // Max threads per threadgroup (hard limit from the pipeline).
+    [[nodiscard]] std::uint32_t max_total_threads_per_threadgroup() const noexcept {
+        return max_tg_;
+    }
+
+private:
+    friend class Device;
+    ComputePipeline(void* native, std::uint32_t simd_width, std::uint32_t max_tg,
+                    std::string label) noexcept
+        : native_(native), simd_width_(simd_width), max_tg_(max_tg), label_(std::move(label)) {}
+
+    void*         native_     = nullptr;
+    std::uint32_t simd_width_ = 0;
+    std::uint32_t max_tg_     = 0;
+    std::string   label_;
+};
+
 }  // namespace mge::rhi

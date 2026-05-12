@@ -273,6 +273,30 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: text (future)
 - **Created**: 2026-05-12
 
+### [P1-FG-BUFFER-001] FrameGraph has no first-class buffer resources
+- **What**: FrameGraph tracks only Texture handles. Compute passes that produce buffer data (M12 particle simulation) and the render pass that consumes them have no declared dependency — ordering today is established only via the backbuffer write they share.
+- **Why now**: For M12 the producer and consumer are the same FG pass (compute runs inside the particle render pass's execute lambda), so a buffer handle would add API surface without buying anything. Will start mattering at M14 (HZB), where one compute pass writes the depth pyramid that a later compute/render pass reads.
+- **Cost if left**: Compute → render data dependencies have to be hand-ordered by pass declaration order. Easy to break silently when the graph grows.
+- **Fix path**: Add `BufferHandle` to `frame_graph::ResourceTable`, mirror the read/write APIs from textures, hook into WAW + producer→consumer edges. Touch the topological sort; tests already cover the patterns we'd need.
+- **Owner**: frame_graph
+- **Created**: 2026-05-12
+
+### [P1-PARTICLES-SORT-001] No sort for transparent particles
+- **What**: Particle render uses additive blend (One/One) — order-independent for emission, fine for the current fire-glow style. Any future translucent particle (smoke, soft-edged sprite over an opaque background) will exhibit incorrect blending.
+- **Why now**: M12 v1 ships a fire-glow look on additive. Sorting 32k+ particles per frame is its own milestone.
+- **Cost if left**: Cannot ship sprite-based smoke / soft alpha particles correctly.
+- **Fix path**: GPU radix sort by view-space depth, or per-bucket binning (Halton-style) — lands when a non-additive particle style is needed.
+- **Owner**: renderer/particles
+- **Created**: 2026-05-12
+
+### [P1-PARTICLES-DEPTH-001] No depth test / soft particles
+- **What**: Particle render pass has no depth attachment, so particles draw over scene geometry regardless of z. Visually fine for fire over the scene; wrong for particles meant to be occluded by cubes.
+- **Why now**: Particle pass runs after tonemap (which writes to the backbuffer, not the HDR depth). Re-importing the gbuffer depth as a read texture is a small change but pulls in FG-buffer-handle thinking, so deferring.
+- **Cost if left**: Particles always appear in front of geometry.
+- **Fix path**: Read the gbuffer depth as a shader resource in the particle fragment shader; compare to the fragment's view-space depth; soften by `smoothstep`. Lands with M12.b.
+- **Owner**: renderer/particles
+- **Created**: 2026-05-12
+
 ### [P1-RHI-TEXUPLOAD-001] Font atlas upload bypasses RHI via metal-cpp escape hatch
 - **What**: `examples/hello_metal/main.cpp` uses `MTL::Texture::replaceRegion` directly to upload the 8-bit font atlas. The RHI `Texture` type has no `upload_region` / `replace_region` method yet.
 - **Why now**: M11 is the first time we needed CPU→GPU texture data after creation. Adding a proper RHI texture upload path (with staging buffer + blit encoder for private-storage textures) is a real interface change and would have pulled scope on M11.

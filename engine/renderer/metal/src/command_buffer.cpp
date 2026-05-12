@@ -61,6 +61,15 @@ RenderEncoder CommandBuffer::begin_render_pass(const RenderPassDesc& desc) {
     return RenderEncoder(enc);
 }
 
+ComputeEncoder CommandBuffer::begin_compute_pass(const std::string& label) {
+    auto* cmd = static_cast<MTL::CommandBuffer*>(native_);
+    MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
+    if (!label.empty()) {
+        enc->setLabel(mb::ns_str(label));
+    }
+    return ComputeEncoder(enc);
+}
+
 void CommandBuffer::present(SwapchainFrame& frame) {
     auto* cmd      = static_cast<MTL::CommandBuffer*>(native_);
     auto* drawable = static_cast<CA::MetalDrawable*>(frame.native_drawable());

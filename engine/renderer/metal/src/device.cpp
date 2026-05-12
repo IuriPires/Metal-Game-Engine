@@ -268,6 +268,40 @@ std::unique_ptr<RenderPipeline> Device::create_render_pipeline(const RenderPipel
         desc.rasterizer.front_face, desc.label));
 }
 
+std::unique_ptr<ComputePipeline> Device::create_compute_pipeline(const ComputePipelineDesc& desc) {
+    if (desc.compute_shader == nullptr) {
+        std::fprintf(stderr, "[rhi/metal] compute pipeline missing shader\n");
+        return nullptr;
+    }
+    auto* dev  = static_cast<MTL::Device*>(native_);
+    auto* clib = static_cast<MTL::Library*>(desc.compute_shader->native());
+    MTL::Function* cfn = clib->newFunction(mb::ns_str(desc.compute_entry));
+    if (cfn == nullptr) {
+        std::fprintf(stderr, "[rhi/metal] missing compute function: %s\n",
+                     desc.compute_entry.c_str());
+        return nullptr;
+    }
+
+    NS::Error* err = nullptr;
+    MTL::ComputePipelineState* pso =
+        dev->newComputePipelineState(cfn, &err);
+    cfn->release();
+
+    if (pso == nullptr) {
+        if (err != nullptr) {
+            std::fprintf(stderr, "[rhi/metal] compute pipeline build failed: %s\n",
+                         err->localizedDescription()->utf8String());
+        }
+        return nullptr;
+    }
+
+    const auto simd_w = static_cast<std::uint32_t>(pso->threadExecutionWidth());
+    const auto max_tg = static_cast<std::uint32_t>(pso->maxTotalThreadsPerThreadgroup());
+
+    return std::unique_ptr<ComputePipeline>(
+        new ComputePipeline(pso, simd_w, max_tg, desc.label));
+}
+
 std::unique_ptr<Swapchain> Device::create_swapchain(void* native_layer, PixelFormat fmt) {
     if (native_layer == nullptr) {
         return nullptr;

@@ -99,4 +99,57 @@ void RenderEncoder::end() noexcept {
     }
 }
 
+// ---------- ComputeEncoder ----------
+
+ComputeEncoder::~ComputeEncoder() {
+    end();
+}
+
+ComputeEncoder::ComputeEncoder(ComputeEncoder&& other) noexcept : native_(other.native_) {
+    other.native_ = nullptr;
+}
+
+void ComputeEncoder::set_pipeline(ComputePipeline& pipeline) {
+    auto* enc = static_cast<MTL::ComputeCommandEncoder*>(native_);
+    enc->setComputePipelineState(
+        static_cast<MTL::ComputePipelineState*>(pipeline.native()));
+}
+
+void ComputeEncoder::set_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset) {
+    auto* enc = static_cast<MTL::ComputeCommandEncoder*>(native_);
+    enc->setBuffer(static_cast<MTL::Buffer*>(buffer.native()), offset, slot);
+}
+
+void ComputeEncoder::set_texture(Texture& texture, std::uint32_t slot) {
+    auto* enc = static_cast<MTL::ComputeCommandEncoder*>(native_);
+    enc->setTexture(static_cast<MTL::Texture*>(texture.native()), slot);
+}
+
+void ComputeEncoder::set_sampler(Sampler& sampler, std::uint32_t slot) {
+    auto* enc = static_cast<MTL::ComputeCommandEncoder*>(native_);
+    enc->setSamplerState(static_cast<MTL::SamplerState*>(sampler.native()), slot);
+}
+
+void ComputeEncoder::dispatch(std::uint32_t grid_x, std::uint32_t grid_y, std::uint32_t grid_z,
+                                std::uint32_t tg_x,   std::uint32_t tg_y,   std::uint32_t tg_z) {
+    auto* enc = static_cast<MTL::ComputeCommandEncoder*>(native_);
+    enc->dispatchThreadgroups(MTL::Size::Make(grid_x, grid_y, grid_z),
+                               MTL::Size::Make(tg_x,   tg_y,   tg_z));
+}
+
+void ComputeEncoder::dispatch_threads(std::uint32_t threads_x, std::uint32_t threads_y,
+                                       std::uint32_t threads_z,
+                                       std::uint32_t tg_x, std::uint32_t tg_y, std::uint32_t tg_z) {
+    auto* enc = static_cast<MTL::ComputeCommandEncoder*>(native_);
+    enc->dispatchThreads(MTL::Size::Make(threads_x, threads_y, threads_z),
+                          MTL::Size::Make(tg_x,      tg_y,      tg_z));
+}
+
+void ComputeEncoder::end() noexcept {
+    if (native_ != nullptr) {
+        static_cast<MTL::ComputeCommandEncoder*>(native_)->endEncoding();
+        native_ = nullptr;
+    }
+}
+
 }  // namespace mge::rhi

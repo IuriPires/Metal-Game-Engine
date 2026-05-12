@@ -42,6 +42,11 @@
     └─ Tonemap (ACES) → present
         │
         ▼
+[ Particles (M12) ]
+    ├─ Compute step: gravity / integration / life decay / respawn
+    └─ Additive billboard render over tonemapped scene
+        │
+        ▼
 [ UI / overlay ]
         │
         ▼

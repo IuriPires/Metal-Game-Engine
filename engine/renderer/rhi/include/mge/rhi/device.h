@@ -37,7 +37,8 @@ public:
     [[nodiscard]] std::unique_ptr<Texture>        create_texture(const TextureDesc& desc);
     [[nodiscard]] std::unique_ptr<Sampler>        create_sampler(const SamplerDesc& desc);
     [[nodiscard]] std::unique_ptr<Shader>         create_shader_from_msl(const ShaderSourceDesc& desc);
-    [[nodiscard]] std::unique_ptr<RenderPipeline> create_render_pipeline(const RenderPipelineDesc& desc);
+    [[nodiscard]] std::unique_ptr<RenderPipeline>  create_render_pipeline(const RenderPipelineDesc& desc);
+    [[nodiscard]] std::unique_ptr<ComputePipeline> create_compute_pipeline(const ComputePipelineDesc& desc);
 
     // native_layer: void* CAMetalLayer pointer obtained from mge::platform::Window::native_layer().
     [[nodiscard]] std::unique_ptr<Swapchain> create_swapchain(void* native_layer,

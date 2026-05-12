@@ -125,6 +125,41 @@ static_assert(sizeof(OverlayConstants) == 16);
 
 constexpr std::size_t k_overlay_max_glyphs = 1024;
 
+// ---------- Particle system ----------
+//
+// 32-byte SoA-ish struct, one per particle. Compute kernel updates it in place.
+// The render pass instances one billboard quad per live particle.
+struct alignas(16) Particle {
+    float position[3]; // world-space
+    float life;        // 0..1, 0 = dead → respawned at the emitter
+    float velocity[3]; // m/s
+    float seed;        // per-particle randomization (constant)
+};
+static_assert(sizeof(Particle) == 32);
+
+struct alignas(16) ParticleSimUniforms {
+    float dt;
+    float time;
+    float life_decay;        // life lost per second
+    float _pad0;
+    float emitter_pos[4];    // xyz + emit_radius
+    float gravity[4];        // xyz + base_speed
+    float color_a[4];        // hot core (rgb) + size (a)
+    float color_b[4];        // cool tail (rgb) + spawn_height
+};
+static_assert(sizeof(ParticleSimUniforms) == 80);
+
+struct alignas(16) ParticleRenderUniforms {
+    mge::math::Mat4 view_proj;
+    float           cam_right[4];
+    float           cam_up[4];
+    float           color_a[4];     // matches sim color_a (with size in .a)
+    float           color_b[4];     // matches sim color_b
+};
+static_assert(sizeof(ParticleRenderUniforms) == 128);
+
+constexpr std::uint32_t k_particle_count = 32768;
+
 // Build a `[N_GLYPHS * 8] x 8` R8Unorm atlas with each glyph's 8x8 bitmap.
 // Returns the upload-ready bytes.
 std::array<std::uint8_t, mge::overlay::k_num_glyphs * 8 * 8> build_font_atlas() {
@@ -534,6 +569,138 @@ constexpr const char* k_overlay_msl = R"(
     }
 )";
 
+// ---------- Particle compute + render shaders ----------
+//
+// Compute kernel: gravity + integration + life decay + respawn at emitter
+// (small disk on the xz plane, upward-biased random velocity).
+// Render: instanced camera-facing billboard quads with a soft additive look.
+constexpr const char* k_particle_compute_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct Particle {
+        float3 position;
+        float  life;
+        float3 velocity;
+        float  seed;
+    };
+
+    struct SimU {
+        float  dt;
+        float  time;
+        float  life_decay;
+        float  _pad0;
+        float4 emitter;   // xyz + emit_radius
+        float4 gravity;   // xyz + base_speed
+        float4 color_a;
+        float4 color_b;
+    };
+
+    // Cheap hash → uniform [0,1)
+    float hash(float x) {
+        x = fract(x * 0.1031);
+        x *= x + 33.33;
+        x *= x + x;
+        return fract(x);
+    }
+
+    kernel void particle_step(device   Particle*    p [[buffer(0)]],
+                                constant SimU&        u [[buffer(1)]],
+                                uint                  gid [[thread_position_in_grid]]) {
+        Particle pp = p[gid];
+        pp.life -= u.dt * u.life_decay;
+        if (pp.life <= 0.0) {
+            // Respawn: random point on a small disk around the emitter,
+            // with a mostly-upward velocity perturbed by the seed.
+            float t   = u.time + pp.seed * 17.0;
+            float a   = hash(pp.seed * 31.0) * 6.28318;
+            float r   = sqrt(hash(t)) * u.emitter.w;
+            float vy  = u.gravity.w * (0.85 + 0.35 * hash(t + 1.0));
+            float vx  = (hash(t + 2.0) - 0.5) * u.gravity.w * 0.45;
+            float vz  = (hash(t + 3.0) - 0.5) * u.gravity.w * 0.45;
+            pp.position = u.emitter.xyz + float3(cos(a) * r, 0.02, sin(a) * r);
+            pp.velocity = float3(vx, vy, vz);
+            pp.life     = 1.0;
+        } else {
+            pp.velocity += u.gravity.xyz * u.dt;
+            pp.position += pp.velocity * u.dt;
+        }
+        p[gid] = pp;
+    }
+)";
+
+constexpr const char* k_particle_render_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct Particle {
+        float3 position;
+        float  life;
+        float3 velocity;
+        float  seed;
+    };
+
+    struct RenderU {
+        float4x4 view_proj;
+        float4   cam_right;
+        float4   cam_up;
+        float4   color_a;   // hot core (rgb) + size (a)
+        float4   color_b;   // cool tail (rgb)
+    };
+
+    struct VSOut {
+        float4 position [[position]];
+        float2 uv;
+        float  life;
+    };
+
+    vertex VSOut particle_vs(uint vid [[vertex_id]],
+                              uint iid [[instance_id]],
+                              device const Particle*  particles [[buffer(0)]],
+                              constant     RenderU&   u         [[buffer(1)]]) {
+        const float2 corners[6] = {
+            float2(0, 0), float2(1, 0), float2(0, 1),
+            float2(0, 1), float2(1, 0), float2(1, 1),
+        };
+        const float2 corner = corners[vid];
+        Particle p          = particles[iid];
+
+        // Collapse dead particles to a degenerate point off-screen.
+        if (p.life <= 0.0) {
+            VSOut o;
+            o.position = float4(2.0, 2.0, 2.0, 1.0);
+            o.uv       = float2(0.0);
+            o.life     = 0.0;
+            return o;
+        }
+
+        float2 c    = corner * 2.0 - 1.0;       // -1..1
+        float  size = u.color_a.a * (0.4 + 0.6 * p.life);
+        float3 ws   = p.position
+                     + u.cam_right.xyz * c.x * size
+                     + u.cam_up.xyz    * c.y * size;
+
+        VSOut o;
+        o.position = u.view_proj * float4(ws, 1.0);
+        o.uv       = corner;
+        o.life     = p.life;
+        return o;
+    }
+
+    fragment float4 particle_fs(VSOut in [[stage_in]],
+                                  constant RenderU& u [[buffer(0)]]) {
+        float2 d = in.uv * 2.0 - 1.0;
+        float  r = length(d);
+        // Soft round falloff
+        float a = saturate(1.0 - r);
+        a       = a * a;
+        // Hot core → cool tail as life fades
+        float3 col = mix(u.color_b.rgb, u.color_a.rgb, in.life);
+        // Pre-multiplied additive emission
+        return float4(col * in.life * 2.5 * a, a);
+    }
+)";
+
 constexpr const char* k_tonemap_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
@@ -666,12 +833,20 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::RenderPipeline> downsample_pso;
     std::unique_ptr<mge::rhi::Shader>         upsample_shader;
     std::unique_ptr<mge::rhi::RenderPipeline> upsample_pso;
-    std::unique_ptr<mge::rhi::Shader>         overlay_shader;
-    std::unique_ptr<mge::rhi::RenderPipeline> overlay_pso;
-    std::unique_ptr<mge::rhi::Texture>        font_atlas;
-    std::unique_ptr<mge::rhi::Buffer>         overlay_instance_buf;
-    std::unique_ptr<mge::rhi::Buffer>         overlay_constants_buf;
-    std::unique_ptr<mge::rhi::Sampler>        overlay_sampler;
+    std::unique_ptr<mge::rhi::Shader>          overlay_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline>  overlay_pso;
+    std::unique_ptr<mge::rhi::Texture>         font_atlas;
+    std::unique_ptr<mge::rhi::Buffer>          overlay_instance_buf;
+    std::unique_ptr<mge::rhi::Buffer>          overlay_constants_buf;
+    std::unique_ptr<mge::rhi::Sampler>         overlay_sampler;
+
+    std::unique_ptr<mge::rhi::Shader>          particle_compute_shader;
+    std::unique_ptr<mge::rhi::ComputePipeline> particle_step_pso;
+    std::unique_ptr<mge::rhi::Shader>          particle_render_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline>  particle_render_pso;
+    std::unique_ptr<mge::rhi::Buffer>          particle_buf;          // N particles
+    std::unique_ptr<mge::rhi::Buffer>          particle_sim_buf;      // SimU per frame
+    std::unique_ptr<mge::rhi::Buffer>          particle_render_buf;   // RenderU per frame
 
     std::unique_ptr<mge::rhi::Buffer>  instance_buf;
     std::size_t                        instance_capacity = 0;
@@ -695,10 +870,15 @@ struct DeferredRenderer {
         r->downsample_shader = r->device->create_shader_from_msl({k_downsample_msl, "downsample"});
         r->upsample_shader   = r->device->create_shader_from_msl({k_upsample_msl,   "upsample"});
         r->overlay_shader    = r->device->create_shader_from_msl({k_overlay_msl,    "overlay"});
+        r->particle_compute_shader =
+            r->device->create_shader_from_msl({k_particle_compute_msl, "particle.compute"});
+        r->particle_render_shader  =
+            r->device->create_shader_from_msl({k_particle_render_msl,  "particle.render"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
             !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
-            !r->overlay_shader) {
+            !r->overlay_shader || !r->particle_compute_shader ||
+            !r->particle_render_shader) {
             return nullptr;
         }
 
@@ -822,11 +1002,54 @@ struct DeferredRenderer {
         ocb.label   = "overlay.constants";
         r->overlay_constants_buf = r->device->create_buffer(ocb);
 
+        // Particle buffers. Initialize with all-dead particles + a random seed
+        // per slot so the kernel respawns them spread out over time on frame 0.
+        {
+            std::vector<Particle> ps(k_particle_count);
+            for (std::uint32_t i = 0; i < k_particle_count; ++i) {
+                // Hash-ish: distinct float per slot in [0, 1).
+                const float s = static_cast<float>(i) * 0.61803398875f;
+                ps[i].seed   = s - std::floor(s);
+                ps[i].life   = -ps[i].seed * 0.75f;  // staggered first-spawn
+                ps[i].position[0] = 0.0f;
+                ps[i].position[1] = 0.0f;
+                ps[i].position[2] = 0.0f;
+                ps[i].velocity[0] = 0.0f;
+                ps[i].velocity[1] = 0.0f;
+                ps[i].velocity[2] = 0.0f;
+            }
+            BufferDesc pb;
+            pb.size              = ps.size() * sizeof(Particle);
+            pb.usage             = BufferUsage::Storage;
+            pb.storage           = StorageMode::Shared;
+            pb.initial_data      = ps.data();
+            pb.initial_data_size = pb.size;
+            pb.label             = "particles";
+            r->particle_buf = r->device->create_buffer(pb);
+        }
+        {
+            BufferDesc pu;
+            pu.size    = sizeof(ParticleSimUniforms);
+            pu.usage   = BufferUsage::Uniform;
+            pu.storage = StorageMode::Shared;
+            pu.label   = "particle.sim_u";
+            r->particle_sim_buf = r->device->create_buffer(pu);
+        }
+        {
+            BufferDesc pu;
+            pu.size    = sizeof(ParticleRenderUniforms);
+            pu.usage   = BufferUsage::Uniform;
+            pu.storage = StorageMode::Shared;
+            pu.label   = "particle.render_u";
+            r->particle_render_buf = r->device->create_buffer(pu);
+        }
+
         if (!r->sphere_vbuf || !r->sphere_ibuf || !r->ground_vbuf || !r->ground_ibuf ||
             !r->cube_vbuf || !r->cube_ibuf || !r->instance_buf || !r->frame_buf ||
             !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler ||
             !r->font_atlas || !r->overlay_sampler || !r->overlay_instance_buf ||
-            !r->overlay_constants_buf) return nullptr;
+            !r->overlay_constants_buf || !r->particle_buf ||
+            !r->particle_sim_buf || !r->particle_render_buf) return nullptr;
 
         // One-shot atlas upload. Phase 1 RHI doesn't expose a buffer->texture
         // blit yet, so we drop to metal-cpp here. Logged as tech debt.
@@ -986,8 +1209,42 @@ struct DeferredRenderer {
             r->overlay_pso                = r->device->create_render_pipeline(pd);
         }
 
+        // Particle compute pipeline (one kernel: gravity + integration + respawn).
+        {
+            ComputePipelineDesc pd;
+            pd.compute_shader = r->particle_compute_shader.get();
+            pd.compute_entry  = "particle_step";
+            pd.label          = "particle.step.pso";
+            r->particle_step_pso = r->device->create_compute_pipeline(pd);
+        }
+
+        // Particle render pipeline: instanced billboard quads, additive emission
+        // over the tonemapped HDR (post-tonemap pass writes to sRGB, but additive
+        // still reads fine — the visual is "fire-glow over scene").
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader   = r->particle_render_shader.get();
+            pd.fragment_shader = r->particle_render_shader.get();
+            pd.vertex_entry    = "particle_vs";
+            pd.fragment_entry  = "particle_fs";
+            pd.topology        = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format    = backbuffer_fmt;
+            pd.color_targets[0].blend     = true;
+            pd.color_targets[0].src_color = BlendFactor::One;
+            pd.color_targets[0].dst_color = BlendFactor::One;
+            pd.color_targets[0].color_op  = BlendOp::Add;
+            pd.color_targets[0].src_alpha = BlendFactor::One;
+            pd.color_targets[0].dst_alpha = BlendFactor::One;
+            pd.color_targets[0].alpha_op  = BlendOp::Add;
+            pd.num_color_targets          = 1;
+            pd.rasterizer.cull_mode       = CullMode::None;
+            pd.label                      = "particle.render.pso";
+            r->particle_render_pso        = r->device->create_render_pipeline(pd);
+        }
+
         if (!r->shadow_pso || !r->gbuffer_pso || !r->lighting_pso || !r->tonemap_pso ||
-            !r->bright_pso || !r->downsample_pso || !r->upsample_pso || !r->overlay_pso) {
+            !r->bright_pso || !r->downsample_pso || !r->upsample_pso || !r->overlay_pso ||
+            !r->particle_step_pso || !r->particle_render_pso) {
             return nullptr;
         }
         return r;
@@ -1221,6 +1478,56 @@ int run_windowed(const Args& a) {
 
         cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
         }  // end of fill_instances profile zone
+
+        // ---- Particle sim + render uniforms ----
+        // Wall-clock dt so the visual stays smooth at any render rate. Respects
+        // pause and time_scale so demo-mode cycles affect particles too.
+        {
+            MGE_PROFILE_ZONE("particle_uniforms");
+            static auto p_last = mge::core::now();
+            const auto  p_now  = mge::core::now();
+            float       p_dt   = static_cast<float>(mge::core::seconds(p_now - p_last));
+            p_last = p_now;
+            if (p_dt < 0.0f)  p_dt = 0.0f;
+            if (p_dt > 0.05f) p_dt = 0.05f;        // clamp big stalls
+            if (loop.is_paused()) p_dt = 0.0f;
+            p_dt *= loop.time_scale();
+
+            ParticleSimUniforms su{};
+            su.dt             = p_dt;
+            su.time           = static_cast<float>(loop.sim_time());
+            su.life_decay     = 0.55f;             // ~1.8s expected lifetime
+            su.emitter_pos[0] = 0.0f;
+            su.emitter_pos[1] = 0.10f;
+            su.emitter_pos[2] = 0.0f;
+            su.emitter_pos[3] = 0.55f;             // emit disk radius
+            su.gravity[0]     =  0.0f;
+            su.gravity[1]     = -2.0f;             // m/s^2
+            su.gravity[2]     =  0.0f;
+            su.gravity[3]     =  4.5f;             // base upward speed
+            // Hot core (mostly used by render), cool tail (mostly used by render).
+            su.color_a[0] = 1.00f; su.color_a[1] = 0.85f; su.color_a[2] = 0.45f;
+            su.color_a[3] = 0.06f;                  // billboard radius (m)
+            su.color_b[0] = 1.00f; su.color_b[1] = 0.20f; su.color_b[2] = 0.05f;
+            su.color_b[3] = 0.0f;
+            std::memcpy(r->particle_sim_buf->contents(), &su, sizeof(su));
+
+            ParticleRenderUniforms ru{};
+            ru.view_proj = camera.view_projection();
+            const auto fwd = camera.forward();
+            const mge::math::Vec3 world_up{0.0f, 1.0f, 0.0f};
+            const auto right = mge::math::normalize(mge::math::cross(fwd, world_up));
+            const auto up    = mge::math::cross(right, fwd);
+            ru.cam_right[0] = right.x; ru.cam_right[1] = right.y; ru.cam_right[2] = right.z;
+            ru.cam_right[3] = 0.0f;
+            ru.cam_up[0]    = up.x;    ru.cam_up[1]    = up.y;    ru.cam_up[2]    = up.z;
+            ru.cam_up[3]    = 0.0f;
+            ru.color_a[0] = su.color_a[0]; ru.color_a[1] = su.color_a[1];
+            ru.color_a[2] = su.color_a[2]; ru.color_a[3] = su.color_a[3];
+            ru.color_b[0] = su.color_b[0]; ru.color_b[1] = su.color_b[1];
+            ru.color_b[2] = su.color_b[2]; ru.color_b[3] = 0.0f;
+            std::memcpy(r->particle_render_buf->contents(), &ru, sizeof(ru));
+        }
 
         // ---- Build the overlay glyph instance buffer with the latest stats ----
         std::uint32_t overlay_glyph_count = 0;
@@ -1500,6 +1807,32 @@ int run_windowed(const Args& a) {
                 enc.set_fragment_texture(ctx.texture(bloom[0]), 1);
                 enc.set_fragment_sampler(*r->linear_clamp, 0);
                 enc.draw(3);
+            });
+
+        // Particles: GPU-driven step + additive billboard render.
+        // The compute step shares this pass's command buffer; FG schedules it
+        // after tonemap (WAW on bb) and before overlay (also WAW on bb).
+        fg.add_pass("particles",
+            [&](PassBuilder& pb) {
+                pb.write_color(bb, LoadAction::Load, 0, 0, 0, 1);
+            },
+            [&](RenderContext& ctx) {
+                {
+                    auto cenc = ctx.cmd().begin_compute_pass("particle.step");
+                    cenc.set_pipeline(*r->particle_step_pso);
+                    cenc.set_buffer(*r->particle_buf,     0);
+                    cenc.set_buffer(*r->particle_sim_buf, 1);
+                    const std::uint32_t tg =
+                        r->particle_step_pso->thread_execution_width();
+                    cenc.dispatch_threads(k_particle_count, 1, 1, tg, 1, 1);
+                }
+                auto rp = ctx.make_render_pass_desc();
+                RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
+                enc.set_pipeline(*r->particle_render_pso);
+                enc.set_vertex_buffer(*r->particle_buf,        0);
+                enc.set_vertex_buffer(*r->particle_render_buf, 1);
+                enc.set_fragment_buffer(*r->particle_render_buf, 0);
+                enc.draw(6, k_particle_count);
             });
 
         // Overlay pass: draws glyphs over the backbuffer with alpha blend.
