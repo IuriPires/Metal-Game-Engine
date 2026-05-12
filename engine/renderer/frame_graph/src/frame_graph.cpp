@@ -63,7 +63,12 @@ void PassBuilder::write_depth(TextureHandle h, rhi::LoadAction load, float clear
     p.writes.push_back({h, ResourceUsage::DepthAttachment});
     p.depth.handle       = h;
     p.depth.load_action  = load;
-    p.depth.store_action = rhi::StoreAction::DontCare;
+    // Store by default - safer to keep the depth contents than to assume the
+    // user won't sample them later. M6's deferred lighting pass reads depth
+    // as a shader resource; with DontCare the values were garbage.
+    // Phase 1.5 can fold this into the FG's lifetime analysis (DontCare when
+    // no later pass reads the depth).
+    p.depth.store_action = rhi::StoreAction::Store;
     p.depth.clear_depth  = clear_depth;
     p.has_depth          = true;
 }

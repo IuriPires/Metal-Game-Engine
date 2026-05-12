@@ -118,6 +118,11 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer
 - **Created**: 2026-05-12
 
+### [P1-FG-STORE-001] write_depth defaulted to DontCare — RESOLVED (M6, 2026-05-12)
+- **What was wrong**: `PassBuilder::write_depth` set `store_action = DontCare`. M6's deferred lighting pass samples the gbuffer's depth as a shader resource. With DontCare, the depth contents weren't preserved past the gbuffer pass → garbage values → broken world position reconstruction → V/H/NoV/VoH wrong → near-black PBR output.
+- **Fix**: default to `StoreAction::Store` in `PassBuilder::write_depth`.
+- **Follow-up**: Phase 1.5 should fold this into the FG's lifetime analysis (auto-`DontCare` when no later pass reads the depth) to save Apple TBDR bandwidth.
+
 ### [P1-PBR-LIGHTS-001] Single directional light, no clustering
 - **What**: Lighting pass hard-codes one sun. No point/spot lights. No clustered light culling.
 - **Why now**: M6 budget priorisation. Forward+ transparent pass + clustered cull comes when we need ≥2 lights.
