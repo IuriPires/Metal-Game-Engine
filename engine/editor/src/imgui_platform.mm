@@ -49,11 +49,20 @@ void new_frame(void*         native_nswindow,
 
     ImGui_ImplMetal_NewFrame(rpd);
 
-    ImGuiIO& io       = ImGui::GetIO();
-    io.DisplaySize.x  = static_cast<float>(drawable_width);
-    io.DisplaySize.y  = static_cast<float>(drawable_height);
-    io.DisplayFramebufferScale =
-        ImVec2(1.0f, 1.0f);  // we already use physical pixels everywhere
+    // Canonical ImGui DPI flow: DisplaySize in LOGICAL points (matching the
+    // OSX backend's mouse coordinate space, which comes from NSEvent
+    // locationInWindow in NSWindow points), and DisplayFramebufferScale tells
+    // the Metal renderer to rasterize at backing-pixel resolution.
+    // ImGui's hit-tests + mouse handling all operate in DisplaySize space, so
+    // the mouse position from the OSX backend matches widget bounding boxes
+    // without us having to patch io.MousePos by hand.
+    ImGuiIO& io = ImGui::GetIO();
+    auto* view  = static_cast<NSView*>(win.contentView);
+    const float dpi = view ? static_cast<float>(view.window.backingScaleFactor)
+                            : 1.0f;
+    io.DisplaySize             = ImVec2(static_cast<float>(drawable_width) / dpi,
+                                          static_cast<float>(drawable_height) / dpi);
+    io.DisplayFramebufferScale = ImVec2(dpi, dpi);
 }
 
 void render_into_encoder(void* command_buffer_native, void* encoder_native) {

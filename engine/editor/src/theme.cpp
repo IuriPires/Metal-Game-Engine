@@ -17,42 +17,47 @@ FontSet load_fonts(float dpi_scale) {
     g_fonts = {};
 
     // macOS ships SF Pro + SF Mono at standard paths since Big Sur. They are
-    // the system equivalents of Inter + JetBrains Mono respectively (the
-    // design system reference fonts). Loading them avoids vendoring TTFs.
+    // the system equivalents of Inter + JetBrains Mono (the design system
+    // reference fonts) — using them avoids vendoring TTFs.
     constexpr const char* kSansPath = "/System/Library/Fonts/SFNS.ttf";
     constexpr const char* kMonoPath = "/System/Library/Fonts/SFNSMono.ttf";
 
-    // Base size = 13 px logical (≈ Inter 12 from the design once subpixel
-    // positioning kicks in). Multiplied by DPI scale so the font is sharp at
-    // physical-pixel size on Retina.
-    const float sans_size = 13.0f * (dpi_scale > 1.0f ? dpi_scale : 1.0f);
-    const float mono_size = 12.0f * (dpi_scale > 1.0f ? dpi_scale : 1.0f);
+    // Canonical ImGui Retina trick: load the atlas at backing-pixel size
+    // (so glyphs are crisp), then set FontGlobalScale = 1/dpi so each glyph
+    // renders at its logical point size. End result: 13 pt text in logical
+    // space (matches DisplaySize), rasterised at 26 backing pixels.
+    const float k_sans_logical = 13.0f;
+    const float k_mono_logical = 12.0f;
+    const float scale          = (dpi_scale > 1.0f ? dpi_scale : 1.0f);
 
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     cfg.OversampleV = 2;
     cfg.PixelSnapH  = false;
 
-    g_fonts.sans = io.Fonts->AddFontFromFileTTF(kSansPath, sans_size, &cfg);
-    g_fonts.mono = io.Fonts->AddFontFromFileTTF(kMonoPath, mono_size, &cfg);
+    g_fonts.sans = io.Fonts->AddFontFromFileTTF(kSansPath, k_sans_logical * scale, &cfg);
+    g_fonts.mono = io.Fonts->AddFontFromFileTTF(kMonoPath, k_mono_logical * scale, &cfg);
 
     if (g_fonts.sans == nullptr) {
         // System path missing — fall back to ImGui's built-in bitmap font.
         io.Fonts->AddFontDefault();
     }
     // No io.Fonts->Build() — the new ImGui Metal backend (docking HEAD)
-    // lazy-builds the atlas the first time it's needed. Calling Build() now
-    // triggers an assert because RendererHasTextures isn't set yet.
+    // lazy-builds the atlas the first time it's needed.
 
-    // FontGlobalScale already accounted for via per-font size; reset it so
-    // we don't double-scale.
-    io.FontGlobalScale = 1.0f;
-
+    io.FontGlobalScale = 1.0f / scale;
     return g_fonts;
 }
 
 void apply_theme(float dpi_scale) {
-    g_dpi_scale = dpi_scale;
+    // Canonical ImGui DPI: DisplaySize stays in LOGICAL points,
+    // DisplayFramebufferScale handles the backing-pixel upscale (set in
+    // platform::new_frame). Widget tokens (28, 22, …) are already in CSS /
+    // logical pixels per the design system — no per-call scaling required.
+    // Keep s() in the API for future per-platform overrides, but make it an
+    // identity at 1.0 here.
+    (void)dpi_scale;
+    g_dpi_scale = 1.0f;
     using namespace tokens;
     ImGuiStyle& s = ImGui::GetStyle();
 
@@ -167,14 +172,9 @@ void apply_theme(float dpi_scale) {
     C[ImGuiCol_PlotHistogram]         = col(acc_dim);
     C[ImGuiCol_PlotHistogramHovered]  = col(acc);
 
-    // —— DPI scaling —— ScaleAllSizes multiplies every spacing/padding/size
-    // value already set above. Calling it ONCE at theme apply time means we
-    // get sharp, properly-sized chrome on Retina without rewriting every
-    // numeric token. Fonts are loaded separately at the scaled size (see
-    // load_fonts()), so FontGlobalScale stays at 1.0.
-    if (dpi_scale > 1.001f) {
-        s.ScaleAllSizes(dpi_scale);
-    }
+    // No ScaleAllSizes — DisplayFramebufferScale handles the per-frame
+    // upscale to backing pixels. ImGui hit-tests + widget bboxes stay in
+    // logical units, which match the OSX backend's mouse coordinate space.
 }
 
 }  // namespace mge::editor

@@ -319,16 +319,21 @@ bool tree_row(int depth, const char* label, bool selected,
     const ImU32 label_co = selected ? tokens::acc : tokens::fg_1;
     dl->AddText(ImVec2(label_x, label_y), label_co, label);
 
-    // Optional mono badge chip floated to the right edge.
+    // Optional mono badge chip floated to the right edge. Use the current
+    // mono font but render at the logical text size (LegacySize × global
+    // scale) so the chip stays inside the row at HiDPI.
     if (badge) {
         ImFont* mono = fonts().mono;
-        const ImVec2 b_text_size = mono
-            ? mono->CalcTextSizeA(mono->LegacySize, FLT_MAX, 0.0f, badge)
-            : ImGui::CalcTextSize(badge);
+        const float fscale = ImGui::GetIO().FontGlobalScale;
+        const float font_h = mono ? mono->LegacySize * fscale
+                                   : ImGui::GetFontSize();
+        const float text_w = mono
+            ? mono->CalcTextSizeA(font_h, FLT_MAX, 0.0f, badge).x
+            : ImGui::CalcTextSize(badge).x;
         const float chip_pad_x = s(tokens::sp_3);
         const float chip_pad_y = s(tokens::sp_1);
-        const float chip_w = b_text_size.x + chip_pad_x * 2.0f;
-        const float chip_h = b_text_size.y + chip_pad_y * 2.0f;
+        const float chip_w = text_w + chip_pad_x * 2.0f;
+        const float chip_h = font_h  + chip_pad_y * 2.0f;
         const float chip_x = cursor.x + size.x - chip_w - s(tokens::sp_4);
         const float chip_y = cursor.y + (row_h - chip_h) * 0.5f;
 
@@ -347,7 +352,7 @@ bool tree_row(int depth, const char* label, bool selected,
                      ImVec2(chip_x + chip_w, chip_y + chip_h),
                      chip_bd, s(tokens::r_1));
         if (mono) {
-            dl->AddText(mono, mono->LegacySize,
+            dl->AddText(mono, font_h,
                          ImVec2(chip_x + chip_pad_x, chip_y + chip_pad_y),
                          chip_fg, badge);
         } else {
