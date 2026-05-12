@@ -197,4 +197,49 @@ std::optional<GltfScene> load_gltf(std::string_view path) noexcept {
     return scene;
 }
 
+GltfMesh make_textured_cube() noexcept {
+    GltfMesh m;
+    m.name           = "textured_cube";
+    m.material_index = 0;
+    m.vertices.resize(24);
+    m.indices.reserve(36);
+
+    // Per-face: 4 corners CCW from camera, normal outward, UV 0..1.
+    struct Face {
+        math::Vec3 n;
+        math::Vec3 corners[4];   // ordered: (0,0) (1,0) (1,1) (0,1) for UVs
+    };
+    const Face faces[6] = {
+        {{ 0,  0,  1}, {{-1,-1, 1},{ 1,-1, 1},{ 1, 1, 1},{-1, 1, 1}}},  // +Z
+        {{ 0,  0, -1}, {{ 1,-1,-1},{-1,-1,-1},{-1, 1,-1},{ 1, 1,-1}}},  // -Z
+        {{ 1,  0,  0}, {{ 1,-1, 1},{ 1,-1,-1},{ 1, 1,-1},{ 1, 1, 1}}},  // +X
+        {{-1,  0,  0}, {{-1,-1,-1},{-1,-1, 1},{-1, 1, 1},{-1, 1,-1}}},  // -X
+        {{ 0,  1,  0}, {{-1, 1, 1},{ 1, 1, 1},{ 1, 1,-1},{-1, 1,-1}}},  // +Y
+        {{ 0, -1,  0}, {{-1,-1,-1},{ 1,-1,-1},{ 1,-1, 1},{-1,-1, 1}}},  // -Y
+    };
+    const float uv[4][2] = {{0,0}, {1,0}, {1,1}, {0,1}};
+
+    std::uint32_t base = 0;
+    std::size_t   vidx = 0;
+    for (const auto& f : faces) {
+        for (int c = 0; c < 4; ++c) {
+            auto& v = m.vertices[vidx++];
+            v.position  = f.corners[c];
+            v.normal    = f.n;
+            v.uv[0]     = uv[c][0];
+            v.uv[1]     = uv[c][1];
+            v._pad[0]   = 0.0f;
+            v._pad[1]   = 0.0f;
+        }
+        m.indices.push_back(base + 0);
+        m.indices.push_back(base + 1);
+        m.indices.push_back(base + 2);
+        m.indices.push_back(base + 0);
+        m.indices.push_back(base + 2);
+        m.indices.push_back(base + 3);
+        base += 4;
+    }
+    return m;
+}
+
 }  // namespace mge::assets

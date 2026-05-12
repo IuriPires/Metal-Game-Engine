@@ -18,6 +18,7 @@
 //   --height H
 //   --cubes N     grid side count for the instanced cube field (default 32 -> 1024 cubes)
 
+#include "mge/assets/gltf_load.h"
 #include "mge/assets/pbr_mesh.h"
 #include "mge/core/game_loop.h"
 #include "mge/core/time.h"
@@ -422,6 +423,82 @@ constexpr const char* k_gbuffer_msl = R"(
         const InstanceData inst = instances[in.iid];
         GBufOut o;
         o.c0 = float4(inst.albedo_ao.rgb, inst.albedo_ao.a);
+        float2 n = octa_encode(normalize(in.normal_ws));
+        o.c1 = float4(n.x, n.y, inst.mr.g, inst.mr.r);
+        return o;
+    }
+)";
+
+// ---------- M25b — Textured PBR gbuffer ----------
+//
+// Same G-Buffer output as the rigid `k_gbuffer_msl`, but the vertex stage
+// reads a GltfVertex (pos + normal + uv + 8B tangent pad = 48 B) and the
+// fragment stage samples a base-color texture instead of using the
+// per-instance flat albedo. Normal map + metallic-roughness map lands in a
+// follow-up — this M25b proves the UV + sampler + upload_region path.
+constexpr const char* k_gltf_gbuffer_msl = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct InstanceData {
+        float4x4 model;
+        float4x4 model_inv_t;
+        float4   albedo_ao;
+        float4   mr;
+    };
+    struct FrameConstants {
+        float4x4 view_proj;
+        float4x4 light_view_proj;
+    };
+
+    struct VSIn  {
+        float3 position [[attribute(0)]];
+        float3 normal   [[attribute(1)]];
+        float2 uv       [[attribute(2)]];
+    };
+    struct VSOut {
+        float4 position [[position]];
+        float3 normal_ws;
+        float2 uv;
+        uint   iid [[flat]];
+    };
+
+    vertex VSOut gltf_gbuffer_vs(VSIn in [[stage_in]],
+                                  uint iid [[instance_id]],
+                                  device const InstanceData* instances [[buffer(1)]],
+                                  device const FrameConstants& fc [[buffer(2)]]) {
+        VSOut o;
+        const InstanceData inst = instances[iid];
+        o.position  = fc.view_proj * inst.model * float4(in.position, 1.0);
+        o.normal_ws = normalize((inst.model_inv_t * float4(in.normal, 0.0)).xyz);
+        o.uv        = in.uv;
+        o.iid       = iid;
+        return o;
+    }
+
+    float2 octa_encode(float3 n) {
+        n /= (abs(n.x) + abs(n.y) + abs(n.z));
+        float2 e = n.z >= 0.0 ? n.xy
+                              : (1.0 - abs(n.yx)) * float2(n.x >= 0 ? 1 : -1, n.y >= 0 ? 1 : -1);
+        return e;
+    }
+
+    struct GBufOut {
+        float4 c0 [[color(0)]];
+        float4 c1 [[color(1)]];
+    };
+
+    fragment GBufOut gltf_gbuffer_fs(VSOut in [[stage_in]],
+                                      texture2d<float> base_color [[texture(0)]],
+                                      sampler          s          [[sampler(0)]],
+                                      device const InstanceData* instances [[buffer(0)]]) {
+        const InstanceData inst = instances[in.iid];
+        float3 tex = base_color.sample(s, in.uv).rgb;
+        // Modulate by per-instance albedo factor so the inspector still
+        // works as a tint when the texture loads in.
+        float3 albedo = tex * inst.albedo_ao.rgb;
+        GBufOut o;
+        o.c0 = float4(albedo, inst.albedo_ao.a);
         float2 n = octa_encode(normalize(in.normal_ws));
         o.c1 = float4(n.x, n.y, inst.mr.g, inst.mr.r);
         return o;
@@ -1362,6 +1439,17 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::AccelerationStructure> blas_tube;   // M24: dynamic, rebuilt every frame
     std::unique_ptr<mge::rhi::AccelerationStructure> tlas;
 
+    // M25b — Textured PBR cube. Procedural GltfVertex mesh (24 verts, 36
+    // indices) + a procedural checker base-color texture uploaded via
+    // Texture::upload_region.
+    std::unique_ptr<mge::rhi::Shader>          gltf_gbuffer_shader;
+    std::unique_ptr<mge::rhi::RenderPipeline>  gltf_gbuffer_pso;
+    std::unique_ptr<mge::rhi::Buffer>          gltf_vbuf;
+    std::unique_ptr<mge::rhi::Buffer>          gltf_ibuf;
+    std::uint32_t                              gltf_index_count = 0;
+    std::unique_ptr<mge::rhi::Texture>         gltf_base_tex;
+    std::unique_ptr<mge::rhi::Sampler>         gltf_sampler;
+
     // M16+M17 — Skinned mesh with compute-driven skinning. The source verts
     // (SkinnedVertex) live in tube_vbuf; each frame a compute kernel reads
     // them + the joint buffer and writes a deformed PbrVertex stream into
@@ -1423,13 +1511,15 @@ struct DeferredRenderer {
             r->device->create_shader_from_msl({k_hzb_stats_msl,        "hzb.stats"});
         r->skin_compute_shader     =
             r->device->create_shader_from_msl({k_skin_compute_msl,     "skin.compute"});
+        r->gltf_gbuffer_shader     =
+            r->device->create_shader_from_msl({k_gltf_gbuffer_msl,     "gltf.gbuffer"});
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader ||
             !r->bright_shader || !r->downsample_shader || !r->upsample_shader ||
             !r->overlay_shader || !r->particle_compute_shader ||
             !r->particle_render_shader || !r->lighting_rt_shader ||
             !r->hzb_build_shader || !r->hzb_stats_shader ||
-            !r->skin_compute_shader) {
+            !r->skin_compute_shader || !r->gltf_gbuffer_shader) {
             return nullptr;
         }
 
@@ -1531,6 +1621,62 @@ struct DeferredRenderer {
             jb.storage = StorageMode::Shared;
             jb.label   = "tube.joints";
             r->tube_joint_buf = r->device->create_buffer(jb);
+        }
+
+        // M25b — procedural textured cube (GltfVertex layout, base-color
+        // checker uploaded via Texture::upload_region).
+        {
+            const auto cube_gltf = mge::assets::make_textured_cube();
+            r->gltf_index_count  = static_cast<std::uint32_t>(cube_gltf.indices.size());
+            r->gltf_vbuf = upload(cube_gltf.vertices.data(),
+                                   cube_gltf.vertices.size() *
+                                       sizeof(mge::assets::GltfVertex),
+                                   BufferUsage::Vertex, "gltf.cube.vbuf");
+            r->gltf_ibuf = upload(cube_gltf.indices.data(),
+                                   cube_gltf.indices.size() *
+                                       sizeof(std::uint32_t),
+                                   BufferUsage::Index, "gltf.cube.ibuf");
+
+            // 64×64 RGBA8 checker: 8×8 cells, alternating warm-orange / dark.
+            constexpr std::uint32_t kTexW = 64;
+            constexpr std::uint32_t kTexH = 64;
+            constexpr std::uint32_t kCell = 8;
+            std::array<std::uint8_t, kTexW * kTexH * 4> tex_bytes{};
+            for (std::uint32_t y = 0; y < kTexH; ++y) {
+                for (std::uint32_t x = 0; x < kTexW; ++x) {
+                    const bool checker = ((x / kCell) ^ (y / kCell)) & 1u;
+                    const std::uint8_t r8 = checker ? 0xE0 : 0x30;
+                    const std::uint8_t g8 = checker ? 0x95 : 0x40;
+                    const std::uint8_t b8 = checker ? 0x35 : 0x4C;
+                    const auto i = (y * kTexW + x) * 4u;
+                    tex_bytes[i + 0] = r8;
+                    tex_bytes[i + 1] = g8;
+                    tex_bytes[i + 2] = b8;
+                    tex_bytes[i + 3] = 0xFF;
+                }
+            }
+
+            TextureDesc td;
+            td.width   = kTexW;
+            td.height  = kTexH;
+            td.format  = PixelFormat::RGBA8Unorm;
+            td.usage   = TextureUsage::ShaderRead | TextureUsage::CopyDst;
+            td.storage = StorageMode::Shared;
+            td.label   = "gltf.cube.basecolor";
+            r->gltf_base_tex = r->device->create_texture(td);
+            if (r->gltf_base_tex) {
+                r->gltf_base_tex->upload_region(0, 0, 0, kTexW, kTexH,
+                                                  tex_bytes.data(),
+                                                  kTexW * 4u);
+            }
+
+            SamplerDesc sd;
+            sd.min_filter = FilterMode::Linear;
+            sd.mag_filter = FilterMode::Linear;
+            sd.address_u  = AddressMode::Repeat;
+            sd.address_v  = AddressMode::Repeat;
+            sd.label      = "gltf.cube.sampler";
+            r->gltf_sampler = r->device->create_sampler(sd);
         }
 
         BufferDesc ib;
@@ -1720,6 +1866,15 @@ struct DeferredRenderer {
                 VertexAttribute{1, VertexFormat::Float32x3, offsetof(mge::assets::PbrVertex, normal),   0},
             }};
 
+        // M25b — GltfVertex layout: pos + normal + uv. 48 B / vertex.
+        const VertexLayout gltf_layout{
+            {VertexBufferLayout{sizeof(mge::assets::GltfVertex), false}},
+            {
+                VertexAttribute{0, VertexFormat::Float32x3, offsetof(mge::assets::GltfVertex, position), 0},
+                VertexAttribute{1, VertexFormat::Float32x3, offsetof(mge::assets::GltfVertex, normal),   0},
+                VertexAttribute{2, VertexFormat::Float32x2, offsetof(mge::assets::GltfVertex, uv),       0},
+            }};
+
         {
             RenderPipelineDesc pd;
             pd.vertex_shader        = r->shadow_shader.get();
@@ -1755,6 +1910,29 @@ struct DeferredRenderer {
             pd.rasterizer.front_face   = FrontFace::CounterClockwise;
             pd.label                   = "gbuffer.pso";
             r->gbuffer_pso             = r->device->create_render_pipeline(pd);
+        }
+
+        // M25b — textured gbuffer PSO (GltfVertex stride 48 B, samples a
+        // base color map in the fragment stage). Same G-Buffer attachments
+        // as the rigid path so downstream lighting is unchanged.
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader   = r->gltf_gbuffer_shader.get();
+            pd.fragment_shader = r->gltf_gbuffer_shader.get();
+            pd.vertex_entry    = "gltf_gbuffer_vs";
+            pd.fragment_entry  = "gltf_gbuffer_fs";
+            pd.vertex_layout   = gltf_layout;
+            pd.topology        = PrimitiveTopology::TriangleList;
+            pd.color_targets[0].format = PixelFormat::RGBA8Unorm;
+            pd.color_targets[1].format = PixelFormat::RGBA16Float;
+            pd.num_color_targets       = 2;
+            pd.depth.format            = PixelFormat::Depth32Float;
+            pd.depth.write_enabled     = true;
+            pd.depth.compare           = DepthCompare::Less;
+            pd.rasterizer.cull_mode    = CullMode::Back;
+            pd.rasterizer.front_face   = FrontFace::CounterClockwise;
+            pd.label                   = "gltf.gbuffer.pso";
+            r->gltf_gbuffer_pso        = r->device->create_render_pipeline(pd);
         }
 
         // M17 — compute skin PSO.
@@ -1939,7 +2117,9 @@ struct DeferredRenderer {
             !r->particle_step_pso || !r->particle_render_pso ||
             !r->hzb_build_pso || !r->hzb_stats_pso ||
             !r->skin_compute_pso || !r->tube_vbuf || !r->tube_skinned_vbuf ||
-            !r->tube_skin_count_buf || !r->tube_ibuf || !r->tube_joint_buf) {
+            !r->tube_skin_count_buf || !r->tube_ibuf || !r->tube_joint_buf ||
+            !r->gltf_gbuffer_pso || !r->gltf_vbuf || !r->gltf_ibuf ||
+            !r->gltf_base_tex || !r->gltf_sampler) {
             return nullptr;
         }
 
@@ -2207,7 +2387,8 @@ int run_windowed(Args a) {
     Window window(wd);
 
     const auto cubes_proto = build_cube_field(a.cube_side);
-    const std::size_t instance_cap = k_spheres.size() + 1 + cubes_proto.size() + 8;
+    // Slots: 5 spheres + ground + tube + gltf cube + N cubes + slack
+    const std::size_t instance_cap = k_spheres.size() + 3 + cubes_proto.size() + 8;
     std::printf("[hello_metal] cube field: %ux%u -> %zu cubes (after empty-center skip)\n",
                 a.cube_side, a.cube_side, cubes_proto.size());
 
@@ -2381,9 +2562,10 @@ int run_windowed(Args a) {
 
         // ---- Profile: instance buffer fill (CPU work) ----
         InstanceData* instances = static_cast<InstanceData*>(r->instance_buf->contents());
-        // Instance layout: [spheres × N, ground, tube, cubes...]
+        // Instance layout: [spheres × N, ground, tube, gltf_cube, cubes...]
         const std::uint32_t tube_slot = static_cast<std::uint32_t>(k_spheres.size() + 1u);
-        const std::uint32_t cube_base = tube_slot + 1u;
+        const std::uint32_t gltf_slot = tube_slot + 1u;
+        const std::uint32_t cube_base = gltf_slot + 1u;
         {
             MGE_PROFILE_ZONE("fill_instances");
         // Spheres at [0..5), packed in LOD-grouped order.
@@ -2428,6 +2610,21 @@ int run_windowed(Args a) {
             inst.mr[0]        = 0.0f;  inst.mr[1] = 0.35f;
             inst.mr[2]        = 0.0f;  inst.mr[3] = 0.0f;
             instances[tube_slot] = inst;
+        }
+        // M25b — textured PBR cube at [gltf_slot]: behind the sphere row,
+        // raised so it's visible above the cube field. Albedo tint x1 lets
+        // the texture show through unmodulated; metallic 0.0, roughness 0.7.
+        {
+            InstanceData inst{};
+            const mge::math::Mat4 m =
+                mge::math::translation(mge::math::Vec3{1.2f, 2.5f, -1.5f});
+            inst.model        = m;
+            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(m));
+            inst.albedo_ao[0] = 1.0f; inst.albedo_ao[1] = 1.0f;
+            inst.albedo_ao[2] = 1.0f; inst.albedo_ao[3] = 1.0f;
+            inst.mr[0]        = 0.0f; inst.mr[1] = 0.70f;
+            inst.mr[2]        = 0.0f; inst.mr[3] = 0.0f;
+            instances[gltf_slot] = inst;
         }
 
         // Frustum-cull the cube field against the camera.
@@ -2779,6 +2976,20 @@ int run_windowed(Args a) {
                     enc.set_fragment_buffer(*r->instance_buf, 0, off);
                     enc.draw_indexed(r->tube_index_count, IndexType::UInt32,
                                       *r->tube_ibuf, 0, 1);
+                }
+
+                // M25b — textured PBR cube. GltfVertex layout (pos+normal+uv)
+                // via gltf_gbuffer_pso, samples gltf_base_tex.
+                {
+                    const std::size_t off = gltf_slot * sizeof(InstanceData);
+                    enc.set_pipeline(*r->gltf_gbuffer_pso);
+                    enc.set_vertex_buffer(*r->gltf_vbuf, 0);
+                    enc.set_vertex_buffer(*r->instance_buf,    1, off);
+                    enc.set_fragment_buffer(*r->instance_buf,  0, off);
+                    enc.set_fragment_texture(*r->gltf_base_tex, 0);
+                    enc.set_fragment_sampler(*r->gltf_sampler,  0);
+                    enc.draw_indexed(r->gltf_index_count, IndexType::UInt32,
+                                      *r->gltf_ibuf, 0, 1);
                 }
             });
 

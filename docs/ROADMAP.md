@@ -240,7 +240,16 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [x] `engine/assets/texture_load.{h,cpp}` — stb-based RGBA8 decoder (always returns 4-channel, expands grayscale/RGB).
   - [x] `engine/assets/gltf_load.{h,cpp}` — cgltf-driven scene loader. Emits `GltfMesh` (positions + normals + UVs + indices, 48 B vertex) + `GltfMaterial` (base color factor / metallic / roughness + indices into `GltfTexture[]`).
   - [x] Integration test `test_gltf_load.cpp` synthesises a 3-vertex .glb in memory, writes it to a temp file, validates vertex/index/material readback. 83/83 tests green.
-- [ ] M25b — Textured PBR shader + demo asset
+- [x] **M25b — Textured PBR shader + procedural demo asset**
+  - [x] `mge::assets::make_textured_cube()` — 24-vertex unit cube in `GltfVertex` layout (pos + normal + uv), per-face 0..1 UVs, CCW outward.
+  - [x] **`k_gltf_gbuffer_msl`** — vertex stage reads `GltfVertex` via `[[attribute(N)]]`; fragment samples a base-color texture and modulates with the per-instance albedo tint so the inspector still works.
+  - [x] **`gltf_gbuffer_pso`** — same G-Buffer attachments as the rigid path; only the vertex format + entry points differ. Drops in next to the rigid + skinned PSOs.
+  - [x] **Demo**: instance slot `[gltf_slot]` between `tube_slot` and the cube field. Procedural 64×64 RGBA8 checker texture uploaded via the new `Texture::upload_region` API. Sampler is Linear / Repeat. Cube placed at (1.2, 2.5, -1.5).
+  - [x] Lighting downstream unchanged — the textured G-Buffer feeds the same deferred lighting / shadow / RT path as everything else. Demo holds ~80 FPS on M1 Pro with editor on (dominated by the M24 TLAS rebuild).
+  - [—] **Real .glb file loading in the demo** — M25c. The `load_gltf` loader is wired and tested; demo only needs CLI plumbing (`--gltf <path>`) + texture-import + material-binding glue.
+  - [—] **Normal + metallic-roughness maps** — M25c.
+- [ ] M25c — Real glTF assets + normal / MR maps
+- [ ] ECS proper (archetype storage)
 - [ ] ECS proper (archetype storage)
 - [ ] Full job system (work stealing, priorities)
 - [ ] Physics (Jolt integration)

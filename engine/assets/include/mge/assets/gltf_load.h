@@ -67,4 +67,10 @@ struct GltfScene {
 // Returns std::nullopt on parse / IO failure; check the log on stderr.
 [[nodiscard]] std::optional<GltfScene> load_gltf(std::string_view path) noexcept;
 
+// Procedural unit cube in GltfVertex layout — 24 verts (one per face corner
+// so each face has its own normal and a 0..1 UV mapping), 36 indices, CCW
+// outward winding. Used by M25b demos to exercise the textured PBR shader
+// without a real glTF asset on disk.
+[[nodiscard]] GltfMesh make_textured_cube() noexcept;
+
 }  // namespace mge::assets
