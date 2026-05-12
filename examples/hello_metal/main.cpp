@@ -1,26 +1,28 @@
-// M7 demo: deferred PBR + single-cascade shadow map. 4-pass FrameGraph:
+// M8 demo: deferred PBR + shadow + instancing + frustum culling.
 //
-//   1. Shadow   - renders scene depth from sun's POV into a 2048x2048 depth
-//                  texture. Vertex-only pipeline (no fragment, no color).
-//   2. GBuffer  - same as M6: writes Albedo+AO + OctaNormal+Roughness+Metallic
-//                  + Depth, now including the ground plane.
-//   3. Lighting - samples G-Buffer + camera depth + shadow map. PCF 3x3 on
-//                  the shadow sample attenuates direct lighting. Writes HDR.
-//   4. Tonemap  - Reinhard -> sRGB backbuffer.
+// Scene now has three groups of instances on a 4-pass FrameGraph:
+//   - 5 spheres (PBR material spectrum, instanced draw)
+//   - 1 ground plane (instanced draw of count 1)
+//   - NxN grid of small cubes around the spheres, CPU-side frustum-culled
+//     each frame and re-uploaded into the instance buffer
 //
-// Cascade splitting is M7.b (deferred). Single cascade covers the scene with
-// a fixed ortho frustum.
+// FrameConstants (view_proj, light_view_proj) are global to a pass. Per-
+// instance data (model, model_inv_t, albedo, metallic, roughness) lives in
+// one big instance buffer, sliced per draw.
 //
 // Args:
 //   --frames N    run for N frames then exit
 //   --headless    skip window creation
 //   --width W
 //   --height H
+//   --cubes N     grid side count for the instanced cube field (default 32 -> 1024 cubes)
 
 #include "mge/assets/pbr_mesh.h"
 #include "mge/core/time.h"
 #include "mge/core/version.h"
 #include "mge/frame_graph/frame_graph.h"
+#include "mge/math/aabb.h"
+#include "mge/math/frustum.h"
 #include "mge/math/mat.h"
 #include "mge/math/vec.h"
 #include "mge/platform/app.h"
@@ -35,14 +37,16 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
 struct Args {
-    int           frames   = 0;
-    bool          headless = false;
-    std::uint32_t width    = 1280;
-    std::uint32_t height   = 720;
+    int           frames    = 0;
+    bool          headless  = false;
+    std::uint32_t width     = 1280;
+    std::uint32_t height    = 720;
+    std::uint32_t cube_side = 32;  // total cubes = side * side
 };
 
 Args parse_args(int argc, char** argv) {
@@ -57,6 +61,9 @@ Args parse_args(int argc, char** argv) {
             a.width = static_cast<std::uint32_t>(std::atoi(argv[++i]));
         } else if (s == "--height" && i + 1 < argc) {
             a.height = static_cast<std::uint32_t>(std::atoi(argv[++i]));
+        } else if (s == "--cubes" && i + 1 < argc) {
+            const int n = std::atoi(argv[++i]);
+            a.cube_side = static_cast<std::uint32_t>(n > 0 ? n : 1);
         }
     }
     return a;
@@ -64,27 +71,28 @@ Args parse_args(int argc, char** argv) {
 
 // ---------- Uniform layouts ----------
 
-struct alignas(16) DrawConstants {
-    mge::math::Mat4 view_proj;       // 64 B - camera VP (gbuffer pass)
-    mge::math::Mat4 model;           // 64 B
-    mge::math::Mat4 model_inv_t;     // 64 B
-    mge::math::Mat4 light_view_proj; // 64 B - sun's view-projection (shadow pass)
-    float           albedo[4];       // 16 B  rgb=albedo, a=ao
-    float           mr[4];           // 16 B  r=metallic, g=roughness, ba=pad
+struct alignas(16) FrameConstants {
+    mge::math::Mat4 view_proj;        // 64 B
+    mge::math::Mat4 light_view_proj;  // 64 B
 };
-static_assert(sizeof(DrawConstants) == 288);
+static_assert(sizeof(FrameConstants) == 128);
 
-constexpr std::size_t k_draw_stride = 320;
-static_assert(sizeof(DrawConstants) <= k_draw_stride);
+struct alignas(16) InstanceData {
+    mge::math::Mat4 model;          // 64 B
+    mge::math::Mat4 model_inv_t;    // 64 B
+    float           albedo_ao[4];   // 16 B  rgb=albedo, a=ao
+    float           mr[4];          // 16 B  r=metallic, g=roughness, ba=pad
+};
+static_assert(sizeof(InstanceData) == 160);
 
 struct alignas(16) LightingConstants {
-    mge::math::Mat4 view_proj_inv;     // 64 B
-    mge::math::Mat4 light_view_proj;   // 64 B
-    float           camera_ws[4];      // 16 B
-    float           sun_dir_ws[4];     // 16 B
-    float           sun_color[4];      // 16 B
-    float           ambient[4];        // 16 B
-    float           shadow_params[4];  // 16 B  r=texel_size, g=bias, b=shadow_map_size
+    mge::math::Mat4 view_proj_inv;
+    mge::math::Mat4 light_view_proj;
+    float           camera_ws[4];
+    float           sun_dir_ws[4];
+    float           sun_color[4];
+    float           ambient[4];
+    float           shadow_params[4];
 };
 static_assert(sizeof(LightingConstants) == 208);
 
@@ -94,22 +102,26 @@ constexpr const char* k_shadow_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
 
-    struct DrawConstants {
-        float4x4 view_proj;
+    struct InstanceData {
         float4x4 model;
         float4x4 model_inv_t;
-        float4x4 light_view_proj;
         float4   albedo_ao;
         float4   mr;
+    };
+    struct FrameConstants {
+        float4x4 view_proj;
+        float4x4 light_view_proj;
     };
 
     struct VSIn  { float3 position [[attribute(0)]]; float3 normal [[attribute(1)]]; };
     struct VSOut { float4 position [[position]]; };
 
     vertex VSOut shadow_vs(VSIn in [[stage_in]],
-                            device const DrawConstants& d [[buffer(1)]]) {
+                            uint iid [[instance_id]],
+                            device const InstanceData* instances [[buffer(1)]],
+                            device const FrameConstants& fc [[buffer(2)]]) {
         VSOut o;
-        o.position = d.light_view_proj * d.model * float4(in.position, 1.0);
+        o.position = fc.light_view_proj * instances[iid].model * float4(in.position, 1.0);
         return o;
     }
 )";
@@ -118,23 +130,33 @@ constexpr const char* k_gbuffer_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
 
-    struct DrawConstants {
-        float4x4 view_proj;
+    struct InstanceData {
         float4x4 model;
         float4x4 model_inv_t;
-        float4x4 light_view_proj;
         float4   albedo_ao;
         float4   mr;
     };
+    struct FrameConstants {
+        float4x4 view_proj;
+        float4x4 light_view_proj;
+    };
 
     struct VSIn  { float3 position [[attribute(0)]]; float3 normal [[attribute(1)]]; };
-    struct VSOut { float4 position [[position]]; float3 normal_ws; };
+    struct VSOut {
+        float4 position [[position]];
+        float3 normal_ws;
+        uint   iid [[flat]];
+    };
 
     vertex VSOut gbuffer_vs(VSIn in [[stage_in]],
-                             device const DrawConstants& d [[buffer(1)]]) {
+                             uint iid [[instance_id]],
+                             device const InstanceData* instances [[buffer(1)]],
+                             device const FrameConstants& fc [[buffer(2)]]) {
         VSOut o;
-        o.position  = d.view_proj * d.model * float4(in.position, 1.0);
-        o.normal_ws = normalize((d.model_inv_t * float4(in.normal, 0.0)).xyz);
+        const InstanceData inst = instances[iid];
+        o.position  = fc.view_proj * inst.model * float4(in.position, 1.0);
+        o.normal_ws = normalize((inst.model_inv_t * float4(in.normal, 0.0)).xyz);
+        o.iid       = iid;
         return o;
     }
 
@@ -151,11 +173,12 @@ constexpr const char* k_gbuffer_msl = R"(
     };
 
     fragment GBufOut gbuffer_fs(VSOut in [[stage_in]],
-                                 device const DrawConstants& d [[buffer(0)]]) {
+                                 device const InstanceData* instances [[buffer(0)]]) {
+        const InstanceData inst = instances[in.iid];
         GBufOut o;
-        o.c0 = float4(d.albedo_ao.rgb, d.albedo_ao.a);
+        o.c0 = float4(inst.albedo_ao.rgb, inst.albedo_ao.a);
         float2 n = octa_encode(normalize(in.normal_ws));
-        o.c1 = float4(n.x, n.y, d.mr.g, d.mr.r);
+        o.c1 = float4(n.x, n.y, inst.mr.g, inst.mr.r);
         return o;
     }
 )";
@@ -172,7 +195,7 @@ constexpr const char* k_lighting_msl = R"(
         float4   sun_dir_ws;
         float4   sun_color;
         float4   ambient;
-        float4   shadow_params; // r=texel_size, g=bias, b=shadow_map_size
+        float4   shadow_params;
     };
 
     struct VSOut { float4 position [[position]]; float2 uv; };
@@ -205,7 +228,6 @@ constexpr const char* k_lighting_msl = R"(
         return F0 + (1.0 - F0) * pow(1.0 - u, 5.0);
     }
 
-    // PCF 3x3 shadow sample. Returns 1.0 = fully lit, 0.0 = fully in shadow.
     float sample_shadow(depth2d<float> shadow_map,
                          sampler          shadow_sampler,
                          float3           world_pos,
@@ -215,8 +237,7 @@ constexpr const char* k_lighting_msl = R"(
         float4 ls   = light_view_proj * float4(world_pos, 1.0);
         float3 lsn  = ls.xyz / ls.w;
         float2 uv   = lsn.xy * 0.5 + 0.5;
-        uv.y        = 1.0 - uv.y;  // flip y for sampling
-        // Outside cascade footprint -> assume lit.
+        uv.y        = 1.0 - uv.y;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
         if (lsn.z < 0.0 || lsn.z > 1.0) return 1.0;
 
@@ -326,9 +347,48 @@ const std::array<Sphere, 5> k_spheres = {{
     {{ 2.4f, 1.2f, 0}, {0.95f,  0.64f,  0.54f}, 1.0f, 0.50f, 1.0f},
 }};
 
-constexpr std::size_t k_draw_count = k_spheres.size() + 1;  // +1 for ground
-
 constexpr std::uint32_t k_shadow_size = 2048;
+
+struct CubeProto {
+    mge::math::Vec3 center;
+    mge::math::Vec3 albedo;
+    float           metallic;
+    float           roughness;
+};
+
+std::vector<CubeProto> build_cube_field(std::uint32_t side) {
+    std::vector<CubeProto> out;
+    out.reserve(static_cast<std::size_t>(side) * side);
+    const float spacing = 1.5f;
+    const float origin  = -(static_cast<float>(side) - 1.0f) * 0.5f * spacing;
+    for (std::uint32_t y = 0; y < side; ++y) {
+        for (std::uint32_t x = 0; x < side; ++x) {
+            CubeProto c;
+            c.center = mge::math::Vec3{
+                origin + static_cast<float>(x) * spacing,
+                0.25f,
+                origin + static_cast<float>(y) * spacing,
+            };
+            // Skip cubes very near the spheres so the foreground stays clear.
+            if (std::abs(c.center.x) < 4.0f && std::abs(c.center.z) < 1.5f) continue;
+
+            const float hue   = static_cast<float>((x * 13u + y * 7u) % 60u) / 60.0f;
+            c.albedo   = mge::math::Vec3{0.25f + 0.5f * hue, 0.35f + 0.4f * (1 - hue), 0.55f};
+            c.metallic = (x + y) % 5u == 0 ? 1.0f : 0.0f;
+            c.roughness = 0.2f + 0.6f * static_cast<float>((x * 5u + y) % 7u) / 7.0f;
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+constexpr float k_cube_half = 0.25f;  // world half-extent after scaling
+
+mge::math::Aabb cube_world_aabb(const CubeProto& c) noexcept {
+    return mge::math::Aabb::from_points(
+        mge::math::Vec3{c.center.x - k_cube_half, c.center.y - k_cube_half, c.center.z - k_cube_half},
+        mge::math::Vec3{c.center.x + k_cube_half, c.center.y + k_cube_half, c.center.z + k_cube_half});
+}
 
 struct DeferredRenderer {
     std::unique_ptr<mge::rhi::Device>         device;
@@ -340,6 +400,9 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::Buffer> ground_vbuf;
     std::unique_ptr<mge::rhi::Buffer> ground_ibuf;
     std::uint32_t                     ground_index_count = 0;
+    std::unique_ptr<mge::rhi::Buffer> cube_vbuf;
+    std::unique_ptr<mge::rhi::Buffer> cube_ibuf;
+    std::uint32_t                     cube_index_count = 0;
 
     std::unique_ptr<mge::rhi::Shader>         shadow_shader;
     std::unique_ptr<mge::rhi::RenderPipeline> shadow_pso;
@@ -350,12 +413,15 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::Shader>         tonemap_shader;
     std::unique_ptr<mge::rhi::RenderPipeline> tonemap_pso;
 
-    std::unique_ptr<mge::rhi::Buffer>  draw_buf;
+    std::unique_ptr<mge::rhi::Buffer>  instance_buf;
+    std::size_t                        instance_capacity = 0;
+    std::unique_ptr<mge::rhi::Buffer>  frame_buf;
     std::unique_ptr<mge::rhi::Buffer>  lighting_buf;
     std::unique_ptr<mge::rhi::Sampler> linear_clamp;
     std::unique_ptr<mge::rhi::Sampler> shadow_sampler;
 
-    static std::unique_ptr<DeferredRenderer> create(mge::rhi::PixelFormat backbuffer_fmt) {
+    static std::unique_ptr<DeferredRenderer> create(mge::rhi::PixelFormat backbuffer_fmt,
+                                                     std::size_t instance_cap) {
         using namespace mge::rhi;
         auto r = std::make_unique<DeferredRenderer>();
         r->device = Device::create();
@@ -368,62 +434,67 @@ struct DeferredRenderer {
         if (!r->queue || !r->shadow_shader || !r->gbuffer_shader ||
             !r->lighting_shader || !r->tonemap_shader) return nullptr;
 
-        // Sphere mesh.
+        auto upload = [&](const void* data, std::size_t size, BufferUsage usage,
+                          const char* label) {
+            BufferDesc d;
+            d.size              = size;
+            d.usage             = usage;
+            d.storage           = StorageMode::Shared;
+            d.initial_data      = data;
+            d.initial_data_size = size;
+            d.label             = label;
+            return r->device->create_buffer(d);
+        };
+
         const auto sphere = mge::assets::make_sphere_pbr(20, 32);
         r->sphere_index_count = static_cast<std::uint32_t>(sphere.indices.size());
+        r->sphere_vbuf = upload(sphere.vertices.data(),
+                                 sphere.vertices.size() * sizeof(mge::assets::PbrVertex),
+                                 BufferUsage::Vertex, "sphere.vbuf");
+        r->sphere_ibuf = upload(sphere.indices.data(),
+                                 sphere.indices.size() * sizeof(std::uint32_t),
+                                 BufferUsage::Index, "sphere.ibuf");
 
-        BufferDesc vb;
-        vb.size              = sphere.vertices.size() * sizeof(mge::assets::PbrVertex);
-        vb.usage             = BufferUsage::Vertex;
-        vb.storage           = StorageMode::Shared;
-        vb.initial_data      = sphere.vertices.data();
-        vb.initial_data_size = vb.size;
-        vb.label             = "sphere.vbuf";
-        r->sphere_vbuf       = r->device->create_buffer(vb);
+        const auto ground = mge::assets::make_ground_plane_pbr(30.0f);
+        r->ground_index_count = static_cast<std::uint32_t>(ground.indices.size());
+        r->ground_vbuf = upload(ground.vertices.data(),
+                                 ground.vertices.size() * sizeof(mge::assets::PbrVertex),
+                                 BufferUsage::Vertex, "ground.vbuf");
+        r->ground_ibuf = upload(ground.indices.data(),
+                                 ground.indices.size() * sizeof(std::uint32_t),
+                                 BufferUsage::Index, "ground.ibuf");
+
+        const auto cube = mge::assets::make_cube_pbr();
+        r->cube_index_count = static_cast<std::uint32_t>(cube.indices.size());
+        r->cube_vbuf = upload(cube.vertices.data(),
+                               cube.vertices.size() * sizeof(mge::assets::PbrVertex),
+                               BufferUsage::Vertex, "cube.vbuf");
+        r->cube_ibuf = upload(cube.indices.data(),
+                               cube.indices.size() * sizeof(std::uint32_t),
+                               BufferUsage::Index, "cube.ibuf");
 
         BufferDesc ib;
-        ib.size              = sphere.indices.size() * sizeof(std::uint32_t);
-        ib.usage             = BufferUsage::Index;
-        ib.storage           = StorageMode::Shared;
-        ib.initial_data      = sphere.indices.data();
-        ib.initial_data_size = ib.size;
-        ib.label             = "sphere.ibuf";
-        r->sphere_ibuf       = r->device->create_buffer(ib);
+        ib.size    = sizeof(InstanceData) * instance_cap;
+        ib.usage   = BufferUsage::Uniform | BufferUsage::Storage;
+        ib.storage = StorageMode::Shared;
+        ib.label   = "instances";
+        r->instance_buf      = r->device->create_buffer(ib);
+        r->instance_capacity = instance_cap;
 
-        // Ground plane mesh.
-        const auto ground = mge::assets::make_ground_plane_pbr(10.0f);
-        r->ground_index_count = static_cast<std::uint32_t>(ground.indices.size());
-
-        BufferDesc gvb = vb;
-        gvb.size              = ground.vertices.size() * sizeof(mge::assets::PbrVertex);
-        gvb.initial_data      = ground.vertices.data();
-        gvb.initial_data_size = gvb.size;
-        gvb.label             = "ground.vbuf";
-        r->ground_vbuf        = r->device->create_buffer(gvb);
-
-        BufferDesc gib = ib;
-        gib.size              = ground.indices.size() * sizeof(std::uint32_t);
-        gib.initial_data      = ground.indices.data();
-        gib.initial_data_size = gib.size;
-        gib.label             = "ground.ibuf";
-        r->ground_ibuf        = r->device->create_buffer(gib);
-
-        // Uniform buffers.
-        BufferDesc db;
-        db.size    = k_draw_stride * k_draw_count;
-        db.usage   = BufferUsage::Uniform;
-        db.storage = StorageMode::Shared;
-        db.label   = "draw.uniforms";
-        r->draw_buf = r->device->create_buffer(db);
+        BufferDesc fb;
+        fb.size    = sizeof(FrameConstants);
+        fb.usage   = BufferUsage::Uniform;
+        fb.storage = StorageMode::Shared;
+        fb.label   = "frame";
+        r->frame_buf = r->device->create_buffer(fb);
 
         BufferDesc lb;
         lb.size    = sizeof(LightingConstants);
         lb.usage   = BufferUsage::Uniform;
         lb.storage = StorageMode::Shared;
-        lb.label   = "lighting.uniforms";
+        lb.label   = "lighting";
         r->lighting_buf = r->device->create_buffer(lb);
 
-        // Samplers.
         SamplerDesc sd;
         sd.min_filter = FilterMode::Linear;
         sd.mag_filter = FilterMode::Linear;
@@ -437,49 +508,45 @@ struct DeferredRenderer {
         shd.mag_filter = FilterMode::Nearest;
         shd.address_u  = AddressMode::ClampToEdge;
         shd.address_v  = AddressMode::ClampToEdge;
-        shd.label      = "shadow.sampler";
+        shd.label      = "shadow";
         r->shadow_sampler = r->device->create_sampler(shd);
 
         if (!r->sphere_vbuf || !r->sphere_ibuf || !r->ground_vbuf || !r->ground_ibuf ||
-            !r->draw_buf || !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler) {
-            return nullptr;
-        }
+            !r->cube_vbuf || !r->cube_ibuf || !r->instance_buf || !r->frame_buf ||
+            !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler) return nullptr;
 
-        // Shadow pipeline: depth-only, no color targets, no fragment shader.
-        {
-            RenderPipelineDesc pd;
-            pd.vertex_shader   = r->shadow_shader.get();
-            pd.fragment_shader = nullptr;
-            pd.vertex_entry    = "shadow_vs";
-            pd.vertex_layout.buffers    = {VertexBufferLayout{sizeof(mge::assets::PbrVertex), false}};
-            pd.vertex_layout.attributes = {
+        const VertexLayout layout{
+            {VertexBufferLayout{sizeof(mge::assets::PbrVertex), false}},
+            {
                 VertexAttribute{0, VertexFormat::Float32x3, offsetof(mge::assets::PbrVertex, position), 0},
                 VertexAttribute{1, VertexFormat::Float32x3, offsetof(mge::assets::PbrVertex, normal),   0},
-            };
-            pd.topology                = PrimitiveTopology::TriangleList;
-            pd.num_color_targets       = 0;
-            pd.depth.format            = PixelFormat::Depth32Float;
-            pd.depth.write_enabled     = true;
-            pd.depth.compare           = DepthCompare::Less;
-            pd.rasterizer.cull_mode    = CullMode::Front;  // front-face cull reduces self-shadow acne
-            pd.rasterizer.front_face   = FrontFace::CounterClockwise;
-            pd.label                   = "shadow.pso";
-            r->shadow_pso              = r->device->create_render_pipeline(pd);
+            }};
+
+        {
+            RenderPipelineDesc pd;
+            pd.vertex_shader        = r->shadow_shader.get();
+            pd.fragment_shader      = nullptr;
+            pd.vertex_entry         = "shadow_vs";
+            pd.vertex_layout        = layout;
+            pd.topology             = PrimitiveTopology::TriangleList;
+            pd.num_color_targets    = 0;
+            pd.depth.format         = PixelFormat::Depth32Float;
+            pd.depth.write_enabled  = true;
+            pd.depth.compare        = DepthCompare::Less;
+            pd.rasterizer.cull_mode = CullMode::Front;
+            pd.rasterizer.front_face = FrontFace::CounterClockwise;
+            pd.label                 = "shadow.pso";
+            r->shadow_pso            = r->device->create_render_pipeline(pd);
         }
 
-        // GBuffer pipeline.
         {
             RenderPipelineDesc pd;
             pd.vertex_shader   = r->gbuffer_shader.get();
             pd.fragment_shader = r->gbuffer_shader.get();
             pd.vertex_entry    = "gbuffer_vs";
             pd.fragment_entry  = "gbuffer_fs";
-            pd.vertex_layout.buffers    = {VertexBufferLayout{sizeof(mge::assets::PbrVertex), false}};
-            pd.vertex_layout.attributes = {
-                VertexAttribute{0, VertexFormat::Float32x3, offsetof(mge::assets::PbrVertex, position), 0},
-                VertexAttribute{1, VertexFormat::Float32x3, offsetof(mge::assets::PbrVertex, normal),   0},
-            };
-            pd.topology                = PrimitiveTopology::TriangleList;
+            pd.vertex_layout   = layout;
+            pd.topology        = PrimitiveTopology::TriangleList;
             pd.color_targets[0].format = PixelFormat::RGBA8Unorm;
             pd.color_targets[1].format = PixelFormat::RGBA16Float;
             pd.num_color_targets       = 2;
@@ -492,7 +559,6 @@ struct DeferredRenderer {
             r->gbuffer_pso             = r->device->create_render_pipeline(pd);
         }
 
-        // Lighting pipeline.
         {
             RenderPipelineDesc pd;
             pd.vertex_shader           = r->lighting_shader.get();
@@ -507,7 +573,6 @@ struct DeferredRenderer {
             r->lighting_pso            = r->device->create_render_pipeline(pd);
         }
 
-        // Tonemap pipeline.
         {
             RenderPipelineDesc pd;
             pd.vertex_shader           = r->tonemap_shader.get();
@@ -531,93 +596,49 @@ struct DeferredRenderer {
 
 mge::math::Mat4 compute_light_view_proj(mge::math::Vec3 sun_dir_ws) {
     using namespace mge::math;
-    // Place a virtual light at distance D along -sun_dir, looking at origin.
     const Vec3  to_light = Vec3{-sun_dir_ws.x, -sun_dir_ws.y, -sun_dir_ws.z};
-    const float D        = 30.0f;
+    const float D        = 50.0f;
     const Vec3  light_pos{to_light.x * D, to_light.y * D, to_light.z * D};
     const Mat4  view     = look_at_rh(light_pos, Vec3{0, 0, 0}, Vec3{0, 1, 0});
-    // Fixed ortho frustum that covers the scene (5 spheres + 20x20 ground).
-    const Mat4  proj     = orthographic_rh_zo(-15.0f, 15.0f, -15.0f, 15.0f, 0.1f, 60.0f);
+    const Mat4  proj     = orthographic_rh_zo(-30.0f, 30.0f, -30.0f, 30.0f, 0.1f, 120.0f);
     return proj * view;
-}
-
-void fill_draw_constants(DeferredRenderer& r, const mge::scene::Camera& cam,
-                          const mge::math::Mat4& light_vp, float t) {
-    using namespace mge::math;
-    const Mat4 vp     = cam.view_projection();
-    const Mat4 wobble = rotation_y(t * 0.4f);
-
-    auto* dst = static_cast<std::byte*>(r.draw_buf->contents());
-    auto stamp = [&](std::size_t slot, const Mat4& model, Vec3 albedo, float ao,
-                      float metallic, float roughness) {
-        DrawConstants d{};
-        d.view_proj       = vp;
-        d.model           = model;
-        d.model_inv_t     = transpose(inverse(model));
-        d.light_view_proj = light_vp;
-        d.albedo[0]       = albedo.x;
-        d.albedo[1]       = albedo.y;
-        d.albedo[2]       = albedo.z;
-        d.albedo[3]       = ao;
-        d.mr[0]           = metallic;
-        d.mr[1]           = roughness;
-        d.mr[2]           = 0.0f;
-        d.mr[3]           = 0.0f;
-        std::memcpy(dst + slot * k_draw_stride, &d, sizeof(d));
-    };
-
-    for (std::size_t i = 0; i < k_spheres.size(); ++i) {
-        const auto& s     = k_spheres[i];
-        const Mat4  model = wobble * translation(s.position);
-        stamp(i, model, s.albedo, s.ao, s.metallic, s.roughness);
-    }
-
-    // Ground plane: identity model, neutral grey, fully diffuse.
-    stamp(k_spheres.size(), Mat4::identity(),
-          Vec3{0.35f, 0.35f, 0.35f}, 1.0f, 0.0f, 0.85f);
 }
 
 void fill_lighting_constants(DeferredRenderer& r, const mge::scene::Camera& cam,
                               const mge::math::Mat4& light_vp,
                               const mge::math::Vec3& sun_dir) {
-    using namespace mge::math;
     LightingConstants u{};
-    u.view_proj_inv   = inverse(cam.view_projection());
+    u.view_proj_inv   = mge::math::inverse(cam.view_projection());
     u.light_view_proj = light_vp;
     u.camera_ws[0]    = cam.eye().x;
     u.camera_ws[1]    = cam.eye().y;
     u.camera_ws[2]    = cam.eye().z;
     u.camera_ws[3]    = 1.0f;
-
-    u.sun_dir_ws[0] = sun_dir.x;
-    u.sun_dir_ws[1] = sun_dir.y;
-    u.sun_dir_ws[2] = sun_dir.z;
-    u.sun_dir_ws[3] = 1.0f;
-
-    u.sun_color[0] = 3.2f;
-    u.sun_color[1] = 3.0f;
-    u.sun_color[2] = 2.6f;
-    u.sun_color[3] = 1.0f;
-
-    u.ambient[0] = 0.12f;
-    u.ambient[1] = 0.14f;
-    u.ambient[2] = 0.18f;
-    u.ambient[3] = 0.0f;
-
-    u.shadow_params[0] = 1.0f / static_cast<float>(k_shadow_size);  // texel size
-    u.shadow_params[1] = 0.0015f;                                   // depth bias
+    u.sun_dir_ws[0]   = sun_dir.x;
+    u.sun_dir_ws[1]   = sun_dir.y;
+    u.sun_dir_ws[2]   = sun_dir.z;
+    u.sun_dir_ws[3]   = 1.0f;
+    u.sun_color[0]    = 3.2f;
+    u.sun_color[1]    = 3.0f;
+    u.sun_color[2]    = 2.6f;
+    u.sun_color[3]    = 1.0f;
+    u.ambient[0]      = 0.12f;
+    u.ambient[1]      = 0.14f;
+    u.ambient[2]      = 0.18f;
+    u.ambient[3]      = 0.0f;
+    u.shadow_params[0] = 1.0f / static_cast<float>(k_shadow_size);
+    u.shadow_params[1] = 0.0015f;
     u.shadow_params[2] = static_cast<float>(k_shadow_size);
     u.shadow_params[3] = 0.0f;
-
     std::memcpy(r.lighting_buf->contents(), &u, sizeof(u));
 }
 
-int run_headless() {
-    auto r = DeferredRenderer::create(mge::rhi::PixelFormat::BGRA8UnormSrgb);
+int run_headless(std::size_t instance_cap) {
+    auto r = DeferredRenderer::create(mge::rhi::PixelFormat::BGRA8UnormSrgb, instance_cap);
     if (!r) { std::fprintf(stderr, "headless: init failed\n"); return 1; }
     const auto info = r->device->info();
-    std::printf("[hello_metal] headless smoke ok: device=%s, sphere %u idx, ground %u idx\n",
-                info.name.c_str(), r->sphere_index_count, r->ground_index_count);
+    std::printf("[hello_metal] headless smoke ok: device=%s, sphere %u idx, cube %u idx\n",
+                info.name.c_str(), r->sphere_index_count, r->cube_index_count);
     return 0;
 }
 
@@ -633,18 +654,22 @@ int run_windowed(const Args& a) {
     app.set_name("hello_metal");
 
     WindowDesc wd;
-    wd.title  = "MetalGameEngine - hello_metal (deferred PBR + shadow)";
+    wd.title  = "MetalGameEngine - hello_metal (PBR + shadow + instancing)";
     wd.width  = a.width;
     wd.height = a.height;
     Window window(wd);
 
+    const auto cubes_proto = build_cube_field(a.cube_side);
+    const std::size_t instance_cap = k_spheres.size() + 1 + cubes_proto.size() + 8;
+    std::printf("[hello_metal] cube field: %ux%u -> %zu cubes (after empty-center skip)\n",
+                a.cube_side, a.cube_side, cubes_proto.size());
+
     constexpr PixelFormat backbuffer_fmt = PixelFormat::BGRA8UnormSrgb;
-    auto r = DeferredRenderer::create(backbuffer_fmt);
+    auto r = DeferredRenderer::create(backbuffer_fmt, instance_cap);
     if (!r) { std::fprintf(stderr, "renderer init failed\n"); return 1; }
     const auto info = r->device->info();
-    std::printf("[hello_metal] device: %s (unified=%d ray_tracing=%d)\n",
-                info.name.c_str(), info.has_unified_memory ? 1 : 0,
-                info.supports_ray_tracing ? 1 : 0);
+    std::printf("[hello_metal] device: %s, instance_cap=%zu\n",
+                info.name.c_str(), instance_cap);
 
     auto swap = r->device->create_swapchain(window.native_layer(), backbuffer_fmt);
     if (!swap) { std::fprintf(stderr, "swapchain init failed\n"); return 1; }
@@ -660,13 +685,16 @@ int run_windowed(const Args& a) {
     camera.set_perspective(mge::math::radians(50.0f),
                            static_cast<float>(window.drawable_width()) /
                                static_cast<float>(window.drawable_height()),
-                           0.1f, 100.0f);
+                           0.1f, 200.0f);
     camera.look_at({0.0f, 3.0f, 7.0f}, {0, 1.2f, 0}, {0, 1, 0});
 
     FrameGraph fg(*r->device);
 
     const mge::math::Vec3 sun_dir = mge::math::normalize(mge::math::Vec3{-0.6f, -1.0f, -0.4f});
     const mge::math::Mat4 light_vp = compute_light_view_proj(sun_dir);
+
+    std::vector<std::uint32_t> visible_cubes;
+    visible_cubes.reserve(cubes_proto.size());
 
     mge::core::FrameStats stats;
     auto                  prev   = mge::core::now();
@@ -685,9 +713,67 @@ int run_windowed(const Args& a) {
         auto frame_drawable = swap->acquire_frame();
         if (!frame_drawable.valid()) continue;
 
-        const float t = static_cast<float>(mge::core::seconds(mge::core::now() - origin));
-        fill_draw_constants(*r, camera, light_vp, t);
+        const float t       = static_cast<float>(mge::core::seconds(mge::core::now() - origin));
+        const mge::math::Mat4 wobble = mge::math::rotation_y(t * 0.4f);
+
+        // Build the per-frame instance buffer.
+        auto* instances = static_cast<InstanceData*>(r->instance_buf->contents());
+        // Spheres at [0..5)
+        for (std::size_t i = 0; i < k_spheres.size(); ++i) {
+            const auto&     s     = k_spheres[i];
+            const mge::math::Mat4 m = wobble * mge::math::translation(s.position);
+            InstanceData    inst{};
+            inst.model       = m;
+            inst.model_inv_t = mge::math::transpose(mge::math::inverse(m));
+            inst.albedo_ao[0] = s.albedo.x; inst.albedo_ao[1] = s.albedo.y;
+            inst.albedo_ao[2] = s.albedo.z; inst.albedo_ao[3] = s.ao;
+            inst.mr[0]        = s.metallic; inst.mr[1] = s.roughness;
+            inst.mr[2]        = 0.0f;       inst.mr[3] = 0.0f;
+            instances[i] = inst;
+        }
+        // Ground at [5]
+        {
+            InstanceData inst{};
+            inst.model           = mge::math::Mat4::identity();
+            inst.model_inv_t     = mge::math::Mat4::identity();
+            inst.albedo_ao[0]    = 0.35f; inst.albedo_ao[1] = 0.35f;
+            inst.albedo_ao[2]    = 0.35f; inst.albedo_ao[3] = 1.0f;
+            inst.mr[0]           = 0.0f;  inst.mr[1] = 0.85f;
+            inst.mr[2]           = 0.0f;  inst.mr[3] = 0.0f;
+            instances[k_spheres.size()] = inst;
+        }
+
+        // Frustum-cull the cube field against the camera.
+        const mge::math::Frustum cam_frustum =
+            mge::math::Frustum::from_view_projection(camera.view_projection());
+        visible_cubes.clear();
+        for (std::uint32_t i = 0; i < cubes_proto.size(); ++i) {
+            if (mge::math::aabb_visible(cam_frustum, cube_world_aabb(cubes_proto[i]))) {
+                visible_cubes.push_back(i);
+            }
+        }
+        const std::uint32_t cube_base = static_cast<std::uint32_t>(k_spheres.size() + 1);
+        for (std::size_t i = 0; i < visible_cubes.size(); ++i) {
+            const auto& c = cubes_proto[visible_cubes[i]];
+            InstanceData inst{};
+            const mge::math::Mat4 scale_m = mge::math::scale({k_cube_half, k_cube_half, k_cube_half});
+            inst.model        = mge::math::translation(c.center) * scale_m;
+            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(inst.model));
+            inst.albedo_ao[0] = c.albedo.x; inst.albedo_ao[1] = c.albedo.y;
+            inst.albedo_ao[2] = c.albedo.z; inst.albedo_ao[3] = 1.0f;
+            inst.mr[0]        = c.metallic; inst.mr[1] = c.roughness;
+            inst.mr[2]        = 0.0f;       inst.mr[3] = 0.0f;
+            instances[cube_base + i] = inst;
+        }
+
+        FrameConstants fc{};
+        fc.view_proj       = camera.view_projection();
+        fc.light_view_proj = light_vp;
+        std::memcpy(r->frame_buf->contents(), &fc, sizeof(fc));
+
         fill_lighting_constants(*r, camera, light_vp, sun_dir);
+
+        const std::uint32_t cube_visible_count = static_cast<std::uint32_t>(visible_cubes.size());
 
         fg.reset();
         const std::uint32_t fw = frame_drawable.texture()->width();
@@ -695,39 +781,25 @@ int run_windowed(const Args& a) {
 
         auto bb = fg.import_texture(*frame_drawable.texture(), "backbuffer");
 
-        TransientTextureDesc gb0_desc;
-        gb0_desc.width   = fw;
-        gb0_desc.height  = fh;
-        gb0_desc.format  = PixelFormat::RGBA8Unorm;
-        gb0_desc.usage   = TextureUsage::RenderTarget | TextureUsage::ShaderRead;
-        gb0_desc.storage = StorageMode::Private;
-
+        TransientTextureDesc gb0_desc{
+            fw, fh, 1, PixelFormat::RGBA8Unorm,
+            TextureUsage::RenderTarget | TextureUsage::ShaderRead, StorageMode::Private};
         TransientTextureDesc gb1_desc = gb0_desc;
         gb1_desc.format               = PixelFormat::RGBA16Float;
-
-        TransientTextureDesc depth_desc;
-        depth_desc.width   = fw;
-        depth_desc.height  = fh;
-        depth_desc.format  = PixelFormat::Depth32Float;
-        depth_desc.usage   = TextureUsage::RenderTarget | TextureUsage::ShaderRead;
-        depth_desc.storage = StorageMode::Private;
-
+        TransientTextureDesc depth_desc{
+            fw, fh, 1, PixelFormat::Depth32Float,
+            TextureUsage::RenderTarget | TextureUsage::ShaderRead, StorageMode::Private};
         TransientTextureDesc hdr_desc = gb1_desc;
-
-        TransientTextureDesc shadow_desc;
-        shadow_desc.width   = k_shadow_size;
-        shadow_desc.height  = k_shadow_size;
-        shadow_desc.format  = PixelFormat::Depth32Float;
-        shadow_desc.usage   = TextureUsage::RenderTarget | TextureUsage::ShaderRead;
-        shadow_desc.storage = StorageMode::Private;
+        TransientTextureDesc shadow_desc{
+            k_shadow_size, k_shadow_size, 1, PixelFormat::Depth32Float,
+            TextureUsage::RenderTarget | TextureUsage::ShaderRead, StorageMode::Private};
 
         auto shadow_map = fg.create_texture(shadow_desc, "shadow_map");
-        auto gb0        = fg.create_texture(gb0_desc,    "gb0.albedo_ao");
-        auto gb1        = fg.create_texture(gb1_desc,    "gb1.normal_rough_metal");
+        auto gb0        = fg.create_texture(gb0_desc,    "gb0");
+        auto gb1        = fg.create_texture(gb1_desc,    "gb1");
         auto depth      = fg.create_texture(depth_desc,  "depth");
         auto hdr        = fg.create_texture(hdr_desc,    "hdr");
 
-        // Pass 1: Shadow map (depth only, scene from sun's POV).
         fg.add_pass("shadow",
             [&](PassBuilder& pb) {
                 pb.write_depth(shadow_map, LoadAction::Clear, 1.0f);
@@ -736,22 +808,27 @@ int run_windowed(const Args& a) {
                 auto rp = ctx.make_render_pass_desc();
                 RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
                 enc.set_pipeline(*r->shadow_pso);
+                enc.set_vertex_buffer(*r->frame_buf, 2);
 
-                // Spheres
                 enc.set_vertex_buffer(*r->sphere_vbuf, 0);
-                for (std::uint32_t i = 0; i < k_spheres.size(); ++i) {
-                    enc.set_vertex_buffer(*r->draw_buf, 1, i * k_draw_stride);
-                    enc.draw_indexed(r->sphere_index_count, IndexType::UInt32,
-                                      *r->sphere_ibuf);
-                }
-                // Ground
+                enc.set_vertex_buffer(*r->instance_buf, 1, 0);
+                enc.draw_indexed(r->sphere_index_count, IndexType::UInt32,
+                                  *r->sphere_ibuf, 0, static_cast<std::uint32_t>(k_spheres.size()));
+
                 enc.set_vertex_buffer(*r->ground_vbuf, 0);
-                enc.set_vertex_buffer(*r->draw_buf, 1, k_spheres.size() * k_draw_stride);
+                enc.set_vertex_buffer(*r->instance_buf, 1, k_spheres.size() * sizeof(InstanceData));
                 enc.draw_indexed(r->ground_index_count, IndexType::UInt32,
-                                  *r->ground_ibuf);
+                                  *r->ground_ibuf, 0, 1);
+
+                if (cube_visible_count > 0) {
+                    enc.set_vertex_buffer(*r->cube_vbuf, 0);
+                    enc.set_vertex_buffer(*r->instance_buf, 1,
+                                            cube_base * sizeof(InstanceData));
+                    enc.draw_indexed(r->cube_index_count, IndexType::UInt32,
+                                      *r->cube_ibuf, 0, cube_visible_count);
+                }
             });
 
-        // Pass 2: GBuffer.
         fg.add_pass("gbuffer",
             [&](PassBuilder& pb) {
                 pb.write_color(gb0,   LoadAction::Clear, 0, 0, 0, 0);
@@ -762,24 +839,31 @@ int run_windowed(const Args& a) {
                 auto rp = ctx.make_render_pass_desc();
                 RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
                 enc.set_pipeline(*r->gbuffer_pso);
+                enc.set_vertex_buffer(*r->frame_buf, 2);
 
                 enc.set_vertex_buffer(*r->sphere_vbuf, 0);
-                for (std::uint32_t i = 0; i < k_spheres.size(); ++i) {
-                    const std::size_t off = i * k_draw_stride;
-                    enc.set_vertex_buffer(*r->draw_buf, 1, off);
-                    enc.set_fragment_buffer(*r->draw_buf, 0, off);
-                    enc.draw_indexed(r->sphere_index_count, IndexType::UInt32,
-                                      *r->sphere_ibuf);
-                }
+                enc.set_vertex_buffer(*r->instance_buf,   1, 0);
+                enc.set_fragment_buffer(*r->instance_buf, 0, 0);
+                enc.draw_indexed(r->sphere_index_count, IndexType::UInt32,
+                                  *r->sphere_ibuf, 0, static_cast<std::uint32_t>(k_spheres.size()));
+
+                const std::size_t ground_off = k_spheres.size() * sizeof(InstanceData);
                 enc.set_vertex_buffer(*r->ground_vbuf, 0);
-                const std::size_t off = k_spheres.size() * k_draw_stride;
-                enc.set_vertex_buffer(*r->draw_buf, 1, off);
-                enc.set_fragment_buffer(*r->draw_buf, 0, off);
+                enc.set_vertex_buffer(*r->instance_buf,   1, ground_off);
+                enc.set_fragment_buffer(*r->instance_buf, 0, ground_off);
                 enc.draw_indexed(r->ground_index_count, IndexType::UInt32,
-                                  *r->ground_ibuf);
+                                  *r->ground_ibuf, 0, 1);
+
+                if (cube_visible_count > 0) {
+                    const std::size_t off = cube_base * sizeof(InstanceData);
+                    enc.set_vertex_buffer(*r->cube_vbuf, 0);
+                    enc.set_vertex_buffer(*r->instance_buf,   1, off);
+                    enc.set_fragment_buffer(*r->instance_buf, 0, off);
+                    enc.draw_indexed(r->cube_index_count, IndexType::UInt32,
+                                      *r->cube_ibuf, 0, cube_visible_count);
+                }
             });
 
-        // Pass 3: Lighting (samples gbuffer + depth + shadow).
         fg.add_pass("lighting",
             [&](PassBuilder& pb) {
                 pb.read(gb0,        mge::frame_graph::ResourceUsage::ShaderRead);
@@ -802,7 +886,6 @@ int run_windowed(const Args& a) {
                 enc.draw(3);
             });
 
-        // Pass 4: Tonemap.
         fg.add_pass("tonemap",
             [&](PassBuilder& pb) {
                 pb.read(hdr, mge::frame_graph::ResourceUsage::ShaderRead);
@@ -830,11 +913,11 @@ int run_windowed(const Args& a) {
 
         ++frame;
         if (frame % 60 == 0) {
-            std::printf("[hello_metal] frame %4d  last=%.2fms  avg=%.2fms (over %zu)\n",
+            std::printf("[hello_metal] frame %4d  last=%.2fms  avg=%.2fms  cubes %u/%zu\n",
                         frame,
                         mge::core::milliseconds(dt),
                         stats.avg_seconds() * 1000.0,
-                        stats.count());
+                        cube_visible_count, cubes_proto.size());
             std::fflush(stdout);
         }
 
@@ -853,6 +936,9 @@ int main(int argc, char** argv) {
     std::printf("[hello_metal] %s 0.0.1 (build=%s)\n",
                 mge::core::engine_name().data(),
                 mge::core::engine_build_kind().data());
-    if (a.headless) return run_headless();
+    if (a.headless) {
+        const std::size_t cap = k_spheres.size() + 1 + static_cast<std::size_t>(a.cube_side) * a.cube_side;
+        return run_headless(cap);
+    }
     return run_windowed(a);
 }

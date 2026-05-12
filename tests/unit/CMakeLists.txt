@@ -16,6 +16,7 @@ add_executable(mge_unit_tests
     test_camera.cpp
     test_primitives.cpp
     test_pbr_primitives.cpp
+    test_frustum.cpp
 )
 
 target_link_libraries(mge_unit_tests

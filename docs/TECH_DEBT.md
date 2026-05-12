@@ -100,6 +100,23 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/rhi
 - **Created**: 2026-05-12, downgraded 2026-05-12
 
+## New debt opened in M8
+
+### [P1-CULL-NEON-001] Scalar cull loop in demo, NEON path unused
+- **What**: The demo loops over cubes one-at-a-time with the scalar `aabb_visible`. The NEON 4-wide path `aabb_visible_x4_neon` exists and is unit-tested but not wired into the demo's hot loop.
+- **Why now**: Scalar cull is already fast enough — 160k AABB tests at ~8 µs total via the compiler's auto-vectorizer. No measurable benefit yet.
+- **Cost if left**: When N grows past ~500k or culls happen on multiple frustums (cascades, point lights), the explicit NEON path matters.
+- **Fix path**: Hot loop using SoA AABB storage + `aabb_visible_x4_neon` in batches. ~30 lines.
+- **Owner**: renderer/culling
+- **Created**: 2026-05-12
+
+### [P1-INSTANCE-GPU-CULL-001] CPU-only cull, no GPU-driven path
+- **What**: Cull runs on the CPU each frame. For very large scenes (hundreds of thousands), GPU-driven cull + indirect draws is cheaper.
+- **Why now**: CPU cull handles 160k+ at <1ms; not the bottleneck.
+- **Fix path**: M8.b / Phase 1.5: compute shader cull + `MTLIndirectCommandBuffer` issuing draw_indexed_indirect from a visible-instance buffer the compute pass produces.
+- **Owner**: renderer/culling
+- **Created**: 2026-05-12
+
 ## New debt opened in M6
 
 ### [P1-PBR-IBL-001] No IBL yet

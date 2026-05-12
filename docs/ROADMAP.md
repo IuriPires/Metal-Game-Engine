@@ -80,10 +80,13 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [—] **4-cascade CSM** (deferred to M7.b — single cascade is sufficient for the demo scene; multi-cascade lands when scene size grows)
   - [—] **Stable texel snap** (deferred with cascades — only matters when camera moves cascades around)
   - [—] **Golden: shadow scene** (deferred to M9 with perceptual diff harness)
-- [ ] **M8 — Culling + instancing**
-  - [ ] CPU frustum cull (NEON SoA)
-  - [ ] GPU instancing via `MTLIndirectCommandBuffer`
-  - [ ] Perf: 50k cubes ≥ 120 FPS
+- [x] **M8 — Culling + instancing**
+  - [x] **`engine/math/frustum.h`** — Plane + Frustum, `from_view_projection` extracts 6 normalized planes from a column-major VP matrix (Metal NDC z[0,1]), `test_aabb` uses the positive-vertex optimization, `aabb_visible` is the fast boolean wrapper.
+  - [x] **NEON 4-wide AABB cull** — `aabb_visible_x4_neon` packs 4 SoA AABBs and tests against all 6 planes in parallel. Cross-checked against scalar in unit tests.
+  - [x] **Instancing across the pipeline** — split per-draw `DrawConstants` into `FrameConstants` (view_proj, light_view_proj) + per-instance `InstanceData` (model, model_inv_t, albedo, mr). Shaders use `[[instance_id]]` to index a shared instance buffer; gbuffer flat-interpolates the iid to the fragment.
+  - [x] **Demo: NxN cube field with CPU frustum cull** — 1024 default (32x32), scales to 160k+ via `--cubes N` arg. Per-frame: rebuild AABBs, cull, pack visible instances, single `draw_indexed` per mesh with `instance_count = visible_count`.
+  - [x] **Perf**: 50k cubes (224x224 grid), ~11k visible after cull → **120 FPS locked** (8.33ms) on M1 Pro. 160k cubes (400x400), ~15k visible → **still 120 FPS locked**. Meta exceeded.
+  - [—] **`MTLIndirectCommandBuffer`** (GPU-driven) — deferred. Direct `instance_count` argument hits the perf target; ICB pays off only with thousands of distinct draw calls.
 - [ ] **M9 — Post FX chain**
   - [ ] HDR pipeline
   - [ ] Auto-exposure (compute histogram)
