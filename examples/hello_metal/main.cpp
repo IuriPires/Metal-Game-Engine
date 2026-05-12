@@ -2901,10 +2901,17 @@ int run_windowed(Args a) {
         // M18 — editor chrome over everything. ImGui-driven; lives in its own
         // pass so it can be toggled at runtime without disturbing the rest of
         // the FrameGraph.
+        //
+        // `editor_state` + `sphere_views` MUST outlive `fg.execute()` below —
+        // the editor pass's execute lambda captures `es` by value (which is
+        // fine), but `es.spheres` points back into sphere_views. Declaring
+        // both at render_fn scope keeps them alive through the FG submit.
+        mge::editor::EngineState                editor_state{};
+        std::array<mge::editor::SphereView, 5>  sphere_views{};
         if (editor && editor->visible()) {
             const std::uint32_t fw_now = fw;
             const std::uint32_t fh_now = fh;
-            mge::editor::EngineState es{};
+            auto& es = editor_state;
             es.fps_now  = stats.last_seconds() > 0.0
                 ? static_cast<float>(1.0 / stats.last_seconds()) : 0.0f;
             es.ms_last  = static_cast<float>(stats.last_seconds() * 1000.0);
@@ -2921,7 +2928,6 @@ int run_windowed(Args a) {
 
             // Sphere bindings — editor reads/writes albedo/metallic/roughness/AO
             // in place. Material edits show on the next frame's gbuffer.
-            std::array<mge::editor::SphereView, 5> sphere_views{};
             for (std::size_t i = 0; i < k_spheres.size(); ++i) {
                 auto& sv         = sphere_views[i];
                 auto& src        = k_spheres[i];
@@ -2941,10 +2947,10 @@ int run_windowed(Args a) {
                 [&](PassBuilder& pb) {
                     pb.write_color(bb, LoadAction::Load, 0, 0, 0, 1);
                 },
-                [&editor, &bb, es, fw_now, fh_now](RenderContext& ctx) {
+                [&editor, &bb, &editor_state, fw_now, fh_now](RenderContext& ctx) {
                     auto rp = ctx.make_render_pass_desc();
                     RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
-                    editor->render(es, enc, ctx.cmd().native(),
+                    editor->render(editor_state, enc, ctx.cmd().native(),
                                     ctx.texture(bb).native(),
                                     fw_now, fh_now);
                 });
