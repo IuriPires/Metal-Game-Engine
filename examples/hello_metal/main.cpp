@@ -578,11 +578,14 @@ constexpr const char* k_particle_compute_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
 
+    // packed_float3 has 12-byte align (4-byte) so the struct matches the C++
+    // layout of `float position[3]; float life; ...` (32 B / slot). Plain
+    // `float3` in device address space would pad to 16 B and misalign reads.
     struct Particle {
-        float3 position;
-        float  life;
-        float3 velocity;
-        float  seed;
+        packed_float3 position;
+        float         life;
+        packed_float3 velocity;
+        float         seed;
     };
 
     struct SimU {
@@ -633,11 +636,12 @@ constexpr const char* k_particle_render_msl = R"(
     #include <metal_stdlib>
     using namespace metal;
 
+    // packed_float3 to match C++ layout (32 B / particle) — see compute shader.
     struct Particle {
-        float3 position;
-        float  life;
-        float3 velocity;
-        float  seed;
+        packed_float3 position;
+        float         life;
+        packed_float3 velocity;
+        float         seed;
     };
 
     struct RenderU {
