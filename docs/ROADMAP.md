@@ -151,8 +151,15 @@ Phase 1 ships: window + Metal device → RHI → frame graph → deferred PBR �
   - [x] **Integration test** — `test_hzb.cpp` fills a 4×4 R32F gradient via a fragment pass, runs a 2×2 reduce, validates tile-max correctness. 82/82 tests green.
   - [—] **Mip pyramid** (M14.b) — current single-resolution HZB loops over the AABB rect per query. Proper pyramid samples the matching-mip texel directly.
   - [—] **Actual draw filtering** (M14.b) — visibility bytes are computed but the draw still rasterizes all frustum-visible cubes. Either vertex-shader degenerate-clip (cheaper, minimal API surface) or full GPU-driven indirect via `MTLIndirectCommandBuffer` (bigger payoff, separate ADR).
-- [ ] M15 — LOD system
-- [ ] M15 — LOD system
+- [x] **M15 — LOD system (discrete distance-based)**
+  - [x] **Sphere LOD chain** — 3 meshes (high `{20,32}`, mid `{10,16}`, low `{6,10}` lat/lon). ~4× tri count drop per step.
+  - [x] **CPU distance-based selection** — per sphere each frame, picks LOD by distance to camera. `--force-lod {0|1|2}` overrides for debugging.
+  - [x] **Per-LOD batched draws** — instance buffer is packed in LOD-grouped order; shadow + G-Buffer passes loop over LODs and emit `draw_indexed(base_instance = lod_offset, instance_count = lod_count)` per level.
+  - [x] **HUD readout** — `LOD H<x> M<y> L<z>  TRIS A/B` shows the LOD distribution + actual vs baseline (all-high) triangle count.
+  - [x] **RT uses high-LOD only** — reflections always sample the highest-detail BLAS; per-LOD BLAS is tracked as a follow-up alongside the static-TLAS deferral.
+  - [—] **Per-LOD BLAS for RT** (M15.b) — needs TLAS refit / rebuild plumbing first (P1-RT-STATIC-TLAS-001).
+  - [—] **Screen-projected size selection** — current heuristic is raw distance; projected radius would handle FOV/zoom correctly. Trivial follow-up.
+  - [—] **LOD dithering / temporal blend** — Phase 2 polish.
 - [ ] M16 — Skeletal animation (mesh skinning + animation graph)
 - [ ] M17 — Skinning compute shader [unblocked by M12]
 

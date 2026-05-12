@@ -48,6 +48,11 @@
 
 namespace {
 
+// M15 — 3-step LOD chain for the sphere mesh (high / mid / low detail).
+// Index [0] is the highest LOD; the demo selects per-instance based on
+// camera distance and dispatches one draw per LOD level.
+constexpr std::size_t kSphereLodCount = 3;
+
 struct Args {
     int           frames     = 0;
     bool          headless   = false;
@@ -61,6 +66,7 @@ struct Args {
     bool          demo_mode  = false;  // cycle pause/slowmo/fast-fwd for visual demo
     bool          no_overlay = false;  // disable profiling overlay
     bool          no_rt      = false;  // disable RT shadows + reflections (fall back to CSM)
+    int           force_lod  = -1;     // -1 = auto (distance), 0/1/2 = forced level
 };
 
 Args parse_args(int argc, char** argv) {
@@ -92,6 +98,12 @@ Args parse_args(int argc, char** argv) {
             a.no_overlay = true;
         } else if (s == "--no-rt") {
             a.no_rt = true;
+        } else if (s == "--force-lod" && i + 1 < argc) {
+            a.force_lod = std::atoi(argv[++i]);
+            if (a.force_lod < 0 ||
+                static_cast<std::size_t>(a.force_lod) >= kSphereLodCount) {
+                a.force_lod = -1;
+            }
         }
     }
     return a;
@@ -1129,9 +1141,10 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::Device>         device;
     std::unique_ptr<mge::rhi::Queue>          queue;
 
-    std::unique_ptr<mge::rhi::Buffer> sphere_vbuf;
-    std::unique_ptr<mge::rhi::Buffer> sphere_ibuf;
-    std::uint32_t                     sphere_index_count = 0;
+    std::unique_ptr<mge::rhi::Buffer> sphere_vbuf[kSphereLodCount]{};
+    std::unique_ptr<mge::rhi::Buffer> sphere_ibuf[kSphereLodCount]{};
+    std::uint32_t                     sphere_index_count[kSphereLodCount]{};
+    std::uint32_t                     sphere_tri_count[kSphereLodCount]{};
     std::unique_ptr<mge::rhi::Buffer> ground_vbuf;
     std::unique_ptr<mge::rhi::Buffer> ground_ibuf;
     std::uint32_t                     ground_index_count = 0;
@@ -1239,14 +1252,30 @@ struct DeferredRenderer {
             return r->device->create_buffer(d);
         };
 
-        const auto sphere = mge::assets::make_sphere_pbr(20, 32);
-        r->sphere_index_count = static_cast<std::uint32_t>(sphere.indices.size());
-        r->sphere_vbuf = upload(sphere.vertices.data(),
-                                 sphere.vertices.size() * sizeof(mge::assets::PbrVertex),
-                                 BufferUsage::Vertex, "sphere.vbuf");
-        r->sphere_ibuf = upload(sphere.indices.data(),
-                                 sphere.indices.size() * sizeof(std::uint32_t),
-                                 BufferUsage::Index, "sphere.ibuf");
+        // Sphere LOD chain (high → mid → low). Each level halves the per-axis
+        // tessellation, producing roughly a 4× drop in triangle count.
+        constexpr std::pair<std::uint32_t, std::uint32_t>
+            sphere_lod_params[kSphereLodCount] = {
+            {20u, 32u},  // high — ~640 verts
+            {10u, 16u},  // mid  — ~160 verts
+            { 6u, 10u},  // low  —   ~60 verts
+        };
+        for (std::size_t lod = 0; lod < kSphereLodCount; ++lod) {
+            const auto m = mge::assets::make_sphere_pbr(sphere_lod_params[lod].first,
+                                                          sphere_lod_params[lod].second);
+            r->sphere_index_count[lod] = static_cast<std::uint32_t>(m.indices.size());
+            r->sphere_tri_count[lod]   = r->sphere_index_count[lod] / 3u;
+            const char* vlabel = lod == 0 ? "sphere.vbuf.high"
+                                : lod == 1 ? "sphere.vbuf.mid" : "sphere.vbuf.low";
+            const char* ilabel = lod == 0 ? "sphere.ibuf.high"
+                                : lod == 1 ? "sphere.ibuf.mid" : "sphere.ibuf.low";
+            r->sphere_vbuf[lod] = upload(m.vertices.data(),
+                                          m.vertices.size() * sizeof(mge::assets::PbrVertex),
+                                          BufferUsage::Vertex, vlabel);
+            r->sphere_ibuf[lod] = upload(m.indices.data(),
+                                          m.indices.size() * sizeof(std::uint32_t),
+                                          BufferUsage::Index,  ilabel);
+        }
 
         const auto ground = mge::assets::make_ground_plane_pbr(30.0f);
         r->ground_index_count = static_cast<std::uint32_t>(ground.indices.size());
@@ -1426,7 +1455,7 @@ struct DeferredRenderer {
             std::memset(r->hzb_visibility_buf->contents(), 1, instance_cap);
         }
 
-        if (!r->sphere_vbuf || !r->sphere_ibuf || !r->ground_vbuf || !r->ground_ibuf ||
+        if (!r->sphere_vbuf[0] || !r->sphere_ibuf[0] || !r->ground_vbuf || !r->ground_ibuf ||
             !r->cube_vbuf || !r->cube_ibuf || !r->instance_buf || !r->frame_buf ||
             !r->lighting_buf || !r->linear_clamp || !r->shadow_sampler ||
             !r->font_atlas || !r->overlay_sampler || !r->overlay_instance_buf ||
@@ -1687,9 +1716,11 @@ struct DeferredRenderer {
             const auto sphere_geom = mge::assets::make_sphere_pbr(20, 32);
             const auto ground_geom = mge::assets::make_ground_plane_pbr(30.0f);
             const auto cube_geom   = mge::assets::make_cube_pbr();
+            // RT BVH uses the high-LOD sphere mesh — reflections always sample
+            // the highest detail (rasterization picks LOD per camera distance).
             r->blas_sphere = build_blas(
-                *r->sphere_vbuf, static_cast<std::uint32_t>(sphere_geom.vertices.size()),
-                *r->sphere_ibuf, r->sphere_index_count, "blas.sphere");
+                *r->sphere_vbuf[0], static_cast<std::uint32_t>(sphere_geom.vertices.size()),
+                *r->sphere_ibuf[0], r->sphere_index_count[0], "blas.sphere");
             r->blas_ground = build_blas(
                 *r->ground_vbuf, static_cast<std::uint32_t>(ground_geom.vertices.size()),
                 *r->ground_ibuf, r->ground_index_count, "blas.ground");
@@ -1794,8 +1825,10 @@ int run_headless(std::size_t instance_cap) {
     auto r = DeferredRenderer::create(mge::rhi::PixelFormat::BGRA8UnormSrgb, instance_cap);
     if (!r) { std::fprintf(stderr, "headless: init failed\n"); return 1; }
     const auto info = r->device->info();
-    std::printf("[hello_metal] headless smoke ok: device=%s, sphere %u idx, cube %u idx\n",
-                info.name.c_str(), r->sphere_index_count, r->cube_index_count);
+    std::printf("[hello_metal] headless smoke ok: device=%s, sphere LODs %u/%u/%u idx, cube %u idx\n",
+                info.name.c_str(),
+                r->sphere_index_count[0], r->sphere_index_count[1], r->sphere_index_count[2],
+                r->cube_index_count);
     return 0;
 }
 
@@ -1935,12 +1968,48 @@ int run_windowed(const Args& a) {
         (void)alpha;
         (void)sim_yaw;
 
+        // ---- LOD selection (CPU, distance-based) ----
+        // Pick per-sphere LOD by camera distance. The instance buffer is
+        // then packed in LOD-grouped order [LOD0 ... LOD1 ... LOD2], so each
+        // LOD's draw can use base_instance + instance_count without
+        // gathering.
+        std::array<std::uint8_t, k_spheres.size()> sphere_lod{};
+        std::array<std::uint32_t, kSphereLodCount> sphere_lod_counts{};
+        {
+            const mge::math::Vec3 cam = camera.eye();
+            for (std::size_t i = 0; i < k_spheres.size(); ++i) {
+                if (a.force_lod >= 0) {
+                    sphere_lod[i] = static_cast<std::uint8_t>(a.force_lod);
+                } else {
+                    const auto p = k_spheres[i].position;
+                    const float dx = p.x - cam.x;
+                    const float dy = p.y - cam.y;
+                    const float dz = p.z - cam.z;
+                    const float d  = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    std::uint8_t lod = 0;
+                    if (d > 18.0f)      lod = 2;
+                    else if (d > 9.0f)  lod = 1;
+                    sphere_lod[i] = lod;
+                }
+                ++sphere_lod_counts[sphere_lod[i]];
+            }
+        }
+        std::array<std::uint32_t, kSphereLodCount> sphere_lod_offsets{};
+        for (std::size_t lod = 1; lod < kSphereLodCount; ++lod) {
+            sphere_lod_offsets[lod] =
+                sphere_lod_offsets[lod - 1] + sphere_lod_counts[lod - 1];
+        }
+
         // ---- Profile: instance buffer fill (CPU work) ----
         InstanceData* instances = static_cast<InstanceData*>(r->instance_buf->contents());
         const std::uint32_t cube_base = static_cast<std::uint32_t>(k_spheres.size() + 1);
         {
             MGE_PROFILE_ZONE("fill_instances");
-        // Spheres at [0..5)
+        // Spheres at [0..5), packed in LOD-grouped order.
+        std::array<std::uint32_t, kSphereLodCount> lod_cursor{};
+        for (std::size_t lod = 0; lod < kSphereLodCount; ++lod) {
+            lod_cursor[lod] = sphere_lod_offsets[lod];
+        }
         for (std::size_t i = 0; i < k_spheres.size(); ++i) {
             const auto&     s     = k_spheres[i];
             const mge::math::Mat4 m = mge::math::translation(s.position);
@@ -1951,7 +2020,8 @@ int run_windowed(const Args& a) {
             inst.albedo_ao[2] = s.albedo.z; inst.albedo_ao[3] = s.ao;
             inst.mr[0]        = s.metallic; inst.mr[1] = s.roughness;
             inst.mr[2]        = 0.0f;       inst.mr[3] = 0.0f;
-            instances[i] = inst;
+            const std::uint8_t lod = sphere_lod[i];
+            instances[lod_cursor[lod]++] = inst;
         }
         // Ground at [5]
         {
@@ -2114,6 +2184,20 @@ int run_windowed(const Args& a) {
             emit_text(glyphs, kPad, y, kScale, gray, buf);
             y += kLineH;
 
+            // M15 — LOD distribution + total sphere triangles drawn this frame.
+            const std::uint32_t lod_tris =
+                sphere_lod_counts[0] * r->sphere_tri_count[0] +
+                sphere_lod_counts[1] * r->sphere_tri_count[1] +
+                sphere_lod_counts[2] * r->sphere_tri_count[2];
+            const std::uint32_t baseline_tris =
+                static_cast<std::uint32_t>(k_spheres.size()) * r->sphere_tri_count[0];
+            std::snprintf(buf, sizeof(buf),
+                          "LOD H%u M%u L%u  TRIS %u/%u",
+                          sphere_lod_counts[0], sphere_lod_counts[1], sphere_lod_counts[2],
+                          lod_tris, baseline_tris);
+            emit_text(glyphs, kPad, y, kScale, gray, buf);
+            y += kLineH;
+
             const char* state = loop.is_paused() ? "PAUSED"
                               : (loop.time_scale() < 0.99f ? "SLOW"
                                 : (loop.time_scale() > 1.01f ? "FAST" : "REAL"));
@@ -2179,16 +2263,20 @@ int run_windowed(const Args& a) {
             [&](PassBuilder& pb) {
                 pb.write_depth(shadow_map, LoadAction::Clear, 1.0f);
             },
-            [&](RenderContext& ctx) {
+            [&, sphere_lod_counts, sphere_lod_offsets](RenderContext& ctx) {
                 auto rp = ctx.make_render_pass_desc();
                 RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
                 enc.set_pipeline(*r->shadow_pso);
                 enc.set_vertex_buffer(*r->frame_buf, 2);
 
-                enc.set_vertex_buffer(*r->sphere_vbuf, 0);
-                enc.set_vertex_buffer(*r->instance_buf, 1, 0);
-                enc.draw_indexed(r->sphere_index_count, IndexType::UInt32,
-                                  *r->sphere_ibuf, 0, static_cast<std::uint32_t>(k_spheres.size()));
+                for (std::size_t lod = 0; lod < kSphereLodCount; ++lod) {
+                    if (sphere_lod_counts[lod] == 0) continue;
+                    enc.set_vertex_buffer(*r->sphere_vbuf[lod], 0);
+                    enc.set_vertex_buffer(*r->instance_buf, 1,
+                                            sphere_lod_offsets[lod] * sizeof(InstanceData));
+                    enc.draw_indexed(r->sphere_index_count[lod], IndexType::UInt32,
+                                      *r->sphere_ibuf[lod], 0, sphere_lod_counts[lod]);
+                }
 
                 enc.set_vertex_buffer(*r->ground_vbuf, 0);
                 enc.set_vertex_buffer(*r->instance_buf, 1, k_spheres.size() * sizeof(InstanceData));
@@ -2210,17 +2298,21 @@ int run_windowed(const Args& a) {
                 pb.write_color(gb1,   LoadAction::Clear, 0, 0, 0, 0);
                 pb.write_depth(depth, LoadAction::Clear, 1.0f);
             },
-            [&](RenderContext& ctx) {
+            [&, sphere_lod_counts, sphere_lod_offsets](RenderContext& ctx) {
                 auto rp = ctx.make_render_pass_desc();
                 RenderEncoder enc = ctx.cmd().begin_render_pass(rp);
                 enc.set_pipeline(*r->gbuffer_pso);
                 enc.set_vertex_buffer(*r->frame_buf, 2);
 
-                enc.set_vertex_buffer(*r->sphere_vbuf, 0);
-                enc.set_vertex_buffer(*r->instance_buf,   1, 0);
-                enc.set_fragment_buffer(*r->instance_buf, 0, 0);
-                enc.draw_indexed(r->sphere_index_count, IndexType::UInt32,
-                                  *r->sphere_ibuf, 0, static_cast<std::uint32_t>(k_spheres.size()));
+                for (std::size_t lod = 0; lod < kSphereLodCount; ++lod) {
+                    if (sphere_lod_counts[lod] == 0) continue;
+                    const std::size_t off = sphere_lod_offsets[lod] * sizeof(InstanceData);
+                    enc.set_vertex_buffer(*r->sphere_vbuf[lod], 0);
+                    enc.set_vertex_buffer(*r->instance_buf,    1, off);
+                    enc.set_fragment_buffer(*r->instance_buf,  0, off);
+                    enc.draw_indexed(r->sphere_index_count[lod], IndexType::UInt32,
+                                      *r->sphere_ibuf[lod], 0, sphere_lod_counts[lod]);
+                }
 
                 const std::size_t ground_off = k_spheres.size() * sizeof(InstanceData);
                 enc.set_vertex_buffer(*r->ground_vbuf, 0);

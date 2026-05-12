@@ -289,6 +289,22 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/particles
 - **Created**: 2026-05-12
 
+### [P1-LOD-DISTANCE-001] LOD selection uses raw distance, not projected size
+- **What**: `sphere_lod[i]` is picked from `length(camera - sphere)` against fixed thresholds (9 m, 18 m). Doesn't account for FOV / zoom: a 30°-FOV camera at 20 m sees a sphere bigger than a 90°-FOV camera at 10 m, but the LOD pick is identical.
+- **Why now**: All-distance heuristic works for the static demo camera. Projected screen-space size is the correct metric but pulls in projection matrix math at LOD-select time.
+- **Cost if left**: Misjudges LOD on zoomed-in scenes. Visible popping when changing FOV.
+- **Fix path**: Compute `radius / distance * cot(half_fov_y) * (height_px / 2)`; pick LOD by pixel coverage.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
+### [P1-LOD-RT-BLAS-001] RT uses high-LOD BLAS only
+- **What**: M15 builds 3 sphere LOD meshes for rasterization but only one BLAS (LOD0) for ray queries. Reflections always sample the highest-detail geometry regardless of which mesh the camera sees rasterized.
+- **Why now**: Per-LOD BLAS means the TLAS instance's `accelerationStructureIndex` needs to flip per LOD change. The TLAS is static today (P1-RT-STATIC-TLAS-001); both deferrals share the same fix path.
+- **Cost if left**: Reflections show high-detail spheres even when the rasterized variant is low-poly. Visually inconsistent on grazing surfaces (silhouettes don't match).
+- **Fix path**: Build 3 sphere BLAS, switch TLAS to dynamic, rewrite `accelerationStructureIndex` per frame.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
 ### [P1-HZB-NOCULL-001] HZB cull writes visibility but draws don't read it
 - **What**: M14 v1 computes the per-instance visibility byte in `hzb_visibility_buf` and counts occluded cubes for the HUD, but the cube vertex shader still rasterizes every frustum-visible cube. No GPU time is actually saved.
 - **Why now**: Real cull either needs a vertex-shader degenerate-clip path (small change, modest win) or a GPU-driven indirect-command path (big change, big win). Splitting M14 off here keeps the milestone tight while validating the HZB pipeline end-to-end.
