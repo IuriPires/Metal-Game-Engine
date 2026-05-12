@@ -1,8 +1,8 @@
 # examples/hello_metal
 #
-# M4 deliverable: a Lambert-lit rotating cube. Uses RHI + scene::Camera +
-# assets::make_cube + inline MSL shader. Resize-aware (depth texture
-# reallocates, camera aspect updates).
+# M5 deliverable: the same Lambert cube as M4, driven through a FrameGraph.
+# Imports the swapchain backbuffer, declares a transient depth texture,
+# emits a "cube" pass. Graph is rebuilt every frame (cheap, resize-safe).
 
 add_executable(hello_metal
     main.cpp
@@ -12,6 +12,7 @@ target_link_libraries(hello_metal
     PRIVATE
         mge::platform
         mge::rhi_metal
+        mge::frame_graph
         mge::scene
         mge::assets
         mge::math

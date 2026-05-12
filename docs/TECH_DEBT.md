@@ -94,10 +94,28 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 
 ### [P1-RHI-MOCK-001] No mock RHI backend yet
 - **What**: Frame-graph / pass-level unit tests cannot run without a real Metal device. Currently all GPU coverage is in the integration suite.
-- **Why now**: M3 budget didn't include a full mock; deferring was the right call.
-- **Cost if left**: CI on non-Metal runners (Linux) cannot run RHI tests. Frame-graph TDD pace at M5 will suffer until mock lands.
-- **Fix path**: Build `mge_rhi_mock` at M5, link from a dedicated `mge_rhi_unit_tests` target.
+- **Why now**: M3 budget didn't include a full mock; M5's compile() is testable directly without execute(), so the urgency dropped.
+- **Cost if left**: CI on non-Metal runners (Linux) cannot run RHI tests. M9+ perf-gate work may want mockable backends.
+- **Fix path**: Build `mge_rhi_mock` when iOS/Vulkan ports start, OR before Phase 1.5 if cross-platform CI is needed.
 - **Owner**: renderer/rhi
+- **Created**: 2026-05-12, downgraded 2026-05-12
+
+## New debt opened in M5
+
+### [P1-FG-BARRIERS-001] No automatic barriers / transitions yet
+- **What**: `FrameGraph` v1 relies on Metal's implicit dependency tracking between render encoders / blit encoders. We don't emit explicit `MTLFence`/event waits; we don't know about ResourceUsage transitions.
+- **Why now**: Metal does the right thing in steady state on a single graphics queue. Explicit barriers matter at Phase 1.5 / Phase 4 (Vulkan).
+- **Cost if left**: Cannot do async compute. Cannot port to Vulkan/DX12 without finishing this.
+- **Fix path**: At Phase 1.5 add a barrier list to the compile output keyed on usage transitions; emit `MTLEvent::signal/wait` between async-eligible passes.
+- **Owner**: renderer/frame_graph
+- **Created**: 2026-05-12
+
+### [P1-FG-REBUILD-001] Frame graph rebuilt per frame
+- **What**: hello_metal calls `fg.reset()` + redeclares passes every frame. compile() runs every frame.
+- **Why now**: Simplest correct model. Resize-safe. Cost is negligible at v1 scale (one pass).
+- **Cost if left**: When pass count grows (M6+), per-frame compile() may dominate CPU. Frame-graph traversal is O(passes + resources).
+- **Fix path**: Pass-hash the declaration; skip recompile when hash unchanged. Or keep a "static" graph + per-frame "dynamic resource updates" for imported textures.
+- **Owner**: renderer/frame_graph
 - **Created**: 2026-05-12
 
 ### [P1-RHI-SHADERS-001] Shaders are inline string literals, runtime-compiled

@@ -46,13 +46,18 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [—] cgltf glTF loader (deferred to M5 — procedural primitives cover M4 demo)
   - [—] FPS controller (deferred — needs input system, lands at M5 with frame graph)
   - [—] Pixel-perfect golden image (deferred to M9 with perceptual diff)
-- [ ] **M5 — Frame graph v1**
-  - [ ] Pass declaration API
-  - [ ] Virtual resources + lifetime analysis
-  - [ ] Automatic transitions and barriers
-  - [ ] Transient pool aliasing
-  - [ ] Graphviz dump
-  - [ ] Unit tests: topology, aliasing correctness
+- [x] **M5 — Frame graph v1**
+  - [x] Pass declaration API: `FrameGraph::add_pass(name, setup, execute)` with `PassBuilder` (read/write/write_color/write_depth) and `RenderContext` (cmd + realize + make_render_pass_desc).
+  - [x] Virtual resources: imported (`import_texture`) and transient (`create_texture`) handles.
+  - [x] Lifetime analysis: per-resource first/last phase index over the topological schedule.
+  - [x] Transient pool aliasing: bin-pack with desc-compatibility check; non-overlapping lifetimes share physical textures.
+  - [x] Topological sort: Kahn's algorithm over producer→consumer edges; stable on declaration order.
+  - [x] Graphviz dump (`to_dot()`) — passes as boxes, resources as ellipses (imported green, transients colored by slot), writes/reads as edges.
+  - [x] hello_metal demo refactored: cube pass declares backbuffer (imported) + depth (transient). Resize-safe.
+  - [x] Tests: 5 unit-ish integration (topo, alias-share, alias-disjoint, distinct-desc, dot dump) + 1 end-to-end execute test.
+  - [—] Mock RHI backend (deferred — compile() is testable directly; integration tests cover execute())
+  - [—] Automatic barriers/transitions (deferred — Metal auto-tracks dependencies in v1)
+  - [—] Async compute / split barriers / subpasses (Phase 1.5)
 - [ ] **M6 — Deferred PBR + IBL**
   - [ ] G-Buffer pass
   - [ ] Clustered light culling (compute)
