@@ -47,7 +47,32 @@ FetchContent_Declare(metal_cpp
     URL_HASH     SHA256=4e7587c0f351d782f1f3e7c67c649b40d0ba780c051b2f6729f00ddc61ada28c
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-# FetchContent_MakeAvailable(metal_cpp)  # enable at M1
+FetchContent_MakeAvailable(metal_cpp)
+
+# metal-cpp ships as headers only; package them as an INTERFACE target with
+# the right include path and Apple framework links. The single .cpp file that
+# defines MTL_PRIVATE_IMPLEMENTATION etc. lives in engine/renderer/metal/.
+if(APPLE AND TARGET metal_cpp::metal_cpp)
+    message(WARNING "metal_cpp::metal_cpp target already exists")
+elseif(APPLE)
+    add_library(metal_cpp_headers INTERFACE)
+    # FetchContent's URL extraction strips the archive's top-level `metal-cpp/`
+    # directory; the headers end up directly under `${metal_cpp_SOURCE_DIR}/`
+    # (Foundation/, Metal/, QuartzCore/, MetalFX/, SingleHeader/).
+    # SYSTEM keyword silences warnings from metal-cpp headers under our strict
+    # warning baseline (anonymous-struct, sign-conversion, etc.).
+    target_include_directories(metal_cpp_headers SYSTEM INTERFACE
+        ${metal_cpp_SOURCE_DIR}
+    )
+    target_link_libraries(metal_cpp_headers INTERFACE
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework CoreGraphics"
+    )
+    target_compile_features(metal_cpp_headers INTERFACE cxx_std_17)
+    add_library(metal_cpp::metal_cpp ALIAS metal_cpp_headers)
+endif()
 
 # -----------------------------------------------------------------------------
 # cgltf — single-header glTF loader

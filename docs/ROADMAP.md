@@ -14,11 +14,13 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [x] Apple Metal docs cached in `external_docs/metal/` (MSL spec, feature tables, metal-cpp 26.4)
   - [x] Initial research notes in `research/` (RTR4 ch2 & ch9, PBRT ch4, Apple TBDR)
   - [x] Placeholder doctest target green (`mge_unit_tests`, 5/5 passing on Debug + Release)
-- [ ] **M1 — Platform + Metal hello**
-  - [ ] Cocoa window + Metal device/queue/swapchain
-  - [ ] Clear-screen frame rendered headed
-  - [ ] Offscreen variant for headless test
-  - [ ] Frame timing readout
+- [x] **M1 — Platform + Metal hello**
+  - [x] Cocoa window + Metal device/queue/swapchain (`mge::platform::Window`, `Swapchain`)
+  - [x] Clear-screen frame rendered headed (`examples/hello_metal`, 119 fps on M1 Pro)
+  - [x] Offscreen variant for headless test (`tests/integration/test_clear_offscreen.cpp`)
+  - [x] Frame timing readout (`mge::core::FrameStats`)
+  - [x] metal-cpp 26.4 wired (Apple Clang framework-search workaround documented in ADR)
+  - [x] tiny Obj-C++ shim confined to `engine/platform/macos/` (per ADR-0001)
 - [ ] **M2 — Core systems**
   - [ ] Logger, Assert, Result<T,E>, Time, Config
   - [ ] Custom SIMD math (vec2/3/4, mat4, quat)

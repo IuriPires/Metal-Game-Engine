@@ -33,6 +33,10 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }} --output-on-failure
 
+      - name: Smoke hello_metal (headless)
+        if: matrix.preset == 'debug'
+        run: ./build/${{ matrix.preset }}/examples/hello_metal/hello_metal --headless
+
   asan:
     name: AddressSanitizer
     runs-on: macos-14

@@ -66,16 +66,29 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: assets
 - **Created**: 2026-05-12
 
-### [P1-OBJC-001] Possible Obj-C++ shim at platform edge
-- **What**: Some macOS APIs (e.g., NSApplicationDelegate callbacks, drag-drop) may need `.mm` glue.
-- **Why now**: Metal-cpp is pure C++, but AppKit is not.
-- **Cost if left**: Minor — bounded surface, easy to maintain.
-- **Fix path**: If any `.mm` lands, it must be confined to `engine/platform/macos/` and described in ADR-0001 follow-up.
-- **Owner**: platform
-- **Created**: 2026-05-12
+### [P1-OBJC-001] Obj-C++ shim at platform edge — RESOLVED (M1, 2026-05-12)
+- **Decision**: Two `.mm` files (`app.mm`, `window.mm`) under `engine/platform/macos/src/` are the only Obj-C++ in the engine. They expose pure-C++ APIs (`mge::platform::App`, `mge::platform::Window`). ADR-0001 updated with the integration notes. Tech-debt status: closed, not "open".
 
 ---
 
 ## Closed debt
 
-(none yet)
+- **P1-OBJC-001** — Obj-C++ shim at platform edge: resolved in M1. See entry above and ADR-0001.
+
+## New debt opened in M1
+
+### [P1-METAL-001] metal-cpp framework-search workaround
+- **What**: We pass metal-cpp's include path without the `metal-cpp/` directory prefix so that `<Foundation/Foundation.hpp>` resolves through Apple Clang's framework lookup miss-then-fall-through. Fragile if Apple ever changes Clang's lookup order.
+- **Why now**: It works today on Apple Clang 17 and unblocks M1.
+- **Cost if left**: A future toolchain bump could break the include path; we'd detect it immediately on CI.
+- **Fix path**: If it breaks, pre-create a symlink directory inside the build tree (`${binary_dir}/metal-cpp-wrapper/metal-cpp -> ${metal_cpp_SOURCE_DIR}`) and add the wrapper to the include path. Documented in ADR-0001.
+- **Owner**: renderer/metal
+- **Created**: 2026-05-12
+
+### [P1-WINDOW-001] No window resize handling yet
+- **What**: `mge::platform::Window` does not react to user-driven resize. The CAMetalLayer's `drawableSize` stays at construction values.
+- **Why now**: M1's clear-only demo doesn't need it; the resize event plumbing wants a real input/event system, which lands in M2/M3.
+- **Cost if left**: Resizing the demo window produces stretched / cropped output. Not crash-worthy.
+- **Fix path**: NSWindowDelegate's `windowDidResize:` + Swapchain::resize call. Add at M3 alongside the RHI.
+- **Owner**: platform
+- **Created**: 2026-05-12

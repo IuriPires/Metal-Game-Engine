@@ -6,8 +6,9 @@
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 
 add_executable(mge_unit_tests
-    test_version.cpp
     test_smoke.cpp
+    test_version.cpp
+    test_time.cpp
 )
 
 target_link_libraries(mge_unit_tests

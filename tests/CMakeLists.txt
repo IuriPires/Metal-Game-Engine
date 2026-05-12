@@ -4,7 +4,10 @@
 
 add_subdirectory(unit)
 
+if(APPLE)
+    add_subdirectory(integration)
+endif()
+
 # Future:
-# add_subdirectory(integration)  # M3+
 # add_subdirectory(golden)       # M3+
 # add_subdirectory(perf)         # M8+

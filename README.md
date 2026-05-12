@@ -35,6 +35,14 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
+Run the M1 demo (open a Metal-backed window, clear-color animated, frame timing):
+
+```sh
+./build/debug/examples/hello_metal/hello_metal --frames 240
+```
+
+`--headless` runs a Metal device smoke test without opening a window (used in CI).
+
 For Metal GPU debugging via Xcode:
 
 ```sh

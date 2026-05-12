@@ -5,12 +5,15 @@
 
 add_subdirectory(core)
 
+if(APPLE)
+    add_subdirectory(renderer)
+    add_subdirectory(platform)
+endif()
+
 # Future (added per milestone):
 # add_subdirectory(math)        # M2
 # add_subdirectory(memory)      # M2
-# add_subdirectory(platform)    # M1
 # add_subdirectory(jobs)        # M2/M10
 # add_subdirectory(profile)     # M2
-# add_subdirectory(renderer)    # M1+
 # add_subdirectory(assets)      # M4
 # add_subdirectory(ecs)         # M4

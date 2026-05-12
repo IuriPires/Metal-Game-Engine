@@ -6,6 +6,7 @@
 
 add_library(mge_core STATIC
     src/version.cpp
+    src/time.cpp
 )
 
 target_include_directories(mge_core

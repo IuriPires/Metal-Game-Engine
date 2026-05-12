@@ -50,7 +50,14 @@ Use **Metal-cpp** for all Metal interactions. Permit a single optional `.mm` tra
 
 ## Open questions
 
-- Decide whether to write our own NSWindow wrapper in C++ via the Objective-C runtime, or accept a tiny `.mm` shim. Revisit at M1.
+- ~~Decide whether to write our own NSWindow wrapper in C++ via the Objective-C runtime, or accept a tiny `.mm` shim. Revisit at M1.~~
+  **Resolved (M1, 2026-05-12)**: a tiny `.mm` shim is the right call. `engine/platform/macos/src/app.mm` and `window.mm` are the only Obj-C++ in the engine (~150 LOC total). They expose pure C++ APIs (`mge::platform::App`, `mge::platform::Window`) so the rest of the codebase never sees Obj-C. Tech-debt entry `P1-OBJC-001` is now resolved.
+
+## Known integration gotchas
+
+- **metal-cpp include path collides with Apple Clang's framework search.** `<Foundation/Foundation.hpp>` would normally make Clang try `Foundation.framework/Headers/Foundation.hpp`, which does not exist, and Clang refuses to fall back to user-include paths even with `-I`. Workaround: place the metal-cpp directory directly on the include path (no `metal-cpp/` prefix) and use angle-bracket form. The framework lookup still happens but Clang then continues to user paths because `Foundation.hpp` is not in the framework. Verified in `third_party/CMakeLists.txt`.
+- **metal-cpp triggers `-Wgnu-anonymous-struct` and `-Wsign-conversion` warnings** under our strict baseline. Mitigated by marking the include path as `SYSTEM`.
+- **Private implementation macros** (`MTL_PRIVATE_IMPLEMENTATION` etc.) must be defined in exactly one TU. We put them in `engine/renderer/metal/src/metal_cpp_impl.cpp`.
 
 ## Implementation notes
 

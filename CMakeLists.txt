@@ -69,13 +69,15 @@ if(MGE_BUILD_TESTS)
 endif()
 
 # -----------------------------------------------------------------------------
-# Tools / examples (Phase 1 placeholders)
+# Examples
 # -----------------------------------------------------------------------------
+if(MGE_BUILD_EXAMPLES AND APPLE)
+    add_subdirectory(examples)
+endif()
+
+# Tools - Phase 1.5+
 # if(MGE_BUILD_TOOLS)
 #     add_subdirectory(tools)
-# endif()
-# if(MGE_BUILD_EXAMPLES)
-#     add_subdirectory(examples)
 # endif()
 
 message(STATUS "MetalGameEngine ${PROJECT_VERSION} configured")
