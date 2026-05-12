@@ -10,14 +10,15 @@ namespace mge::editor {
 
 std::unique_ptr<Editor> Editor::create(rhi::Device& device,
                                         void* native_window,
-                                        rhi::PixelFormat /*backbuffer_fmt*/) {
+                                        rhi::PixelFormat /*backbuffer_fmt*/,
+                                        float dpi_scale) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename  = nullptr;  // Phase 1.5: don't persist layouts to disk yet.
 
-    apply_theme();
+    apply_theme(dpi_scale);
 
     if (!platform::init_metal(device.native())) {
         ImGui::DestroyContext();

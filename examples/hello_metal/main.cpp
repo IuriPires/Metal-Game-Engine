@@ -2125,9 +2125,17 @@ int run_windowed(const Args& a) {
     // runs after `overlay`, before present, on the same backbuffer.
     std::unique_ptr<mge::editor::Editor> editor;
     if (a.editor) {
+        // DPI scale = physical / logical. 2.0 on Retina; 1.0 on a 1× display.
+        const std::uint32_t logical_w = window.width();
+        const std::uint32_t drawable_w = window.drawable_width();
+        const float dpi_scale = (logical_w > 0)
+            ? static_cast<float>(drawable_w) / static_cast<float>(logical_w)
+            : 1.0f;
         editor = mge::editor::Editor::create(*r->device, window.native_window(),
-                                               backbuffer_fmt);
-        std::printf("[hello_metal] editor: %s\n", editor ? "on" : "init failed");
+                                               backbuffer_fmt, dpi_scale);
+        std::printf("[hello_metal] editor: %s  dpi=%.2f\n",
+                    editor ? "on" : "init failed",
+                    static_cast<double>(dpi_scale));
     }
 
     auto sync_drawable_size = [&]() {

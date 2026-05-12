@@ -2,7 +2,12 @@
 
 namespace mge::editor {
 
-void apply_theme() {
+namespace { float g_dpi_scale = 1.0f; }
+
+float current_dpi_scale() noexcept { return g_dpi_scale; }
+
+void apply_theme(float dpi_scale) {
+    g_dpi_scale = dpi_scale;
     using namespace tokens;
     ImGuiStyle& s = ImGui::GetStyle();
 
@@ -116,6 +121,16 @@ void apply_theme() {
     C[ImGuiCol_PlotLinesHovered]      = col(acc);
     C[ImGuiCol_PlotHistogram]         = col(acc_dim);
     C[ImGuiCol_PlotHistogramHovered]  = col(acc);
+
+    // —— DPI scaling —— ScaleAllSizes multiplies every spacing/padding/size
+    // value already set above. Calling it ONCE at theme apply time means we
+    // get sharp, properly-sized chrome on Retina without rewriting every
+    // numeric token. Font scaling separately so the default bitmap font
+    // looks right (M19 will load TTFs at the scaled size for crisper text).
+    if (dpi_scale > 1.001f) {
+        s.ScaleAllSizes(dpi_scale);
+        ImGui::GetIO().FontGlobalScale = dpi_scale;
+    }
 }
 
 }  // namespace mge::editor

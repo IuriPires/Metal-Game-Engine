@@ -74,7 +74,16 @@ constexpr float r_3 = 4.0f;
 }  // namespace tokens
 
 // Configure ImGuiStyle::Colors + ImGuiStyleVar_* from the design tokens.
-void apply_theme();
+// `dpi_scale` is `drawable_size / logical_size` on the parent window (2.0 on
+// Retina). All size tokens and the font global scale are multiplied by it so
+// the editor renders at physical-pixel size on HiDPI displays.
+void apply_theme(float dpi_scale = 1.0f);
+
+// Runtime DPI scale set by apply_theme(). Use `s(v)` to scale any explicit
+// pixel-size token (panel heights, child window sizes). The values in the
+// `tokens::` namespace stay at their CSS-spec (logical) sizes.
+[[nodiscard]] float current_dpi_scale() noexcept;
+[[nodiscard]] inline float s(float v) noexcept { return v * current_dpi_scale(); }
 
 // Convert a packed RGBA8 ImU32 to an ImVec4 the ImGui colors table expects.
 [[nodiscard]] inline ImVec4 col(ImU32 c) {

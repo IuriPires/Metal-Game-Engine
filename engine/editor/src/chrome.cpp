@@ -16,8 +16,8 @@ namespace {
 // Helper: draw a fixed-height bar at the top of the current ImGui window,
 // using the supplied background color and a 1 px bottom divider in bd_1.
 void begin_chrome_bar(const char* id, float height, ImU32 bg) {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(tokens::sp_4, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(tokens::sp_2, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(s(tokens::sp_4), 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(s(tokens::sp_2), 0.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(bg));
     ImGui::BeginChild(id, ImVec2(0.0f, height),
                        ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
@@ -44,43 +44,44 @@ void end_chrome_bar(ImU32 divider) {
 void draw_brand() {
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float  y = p.y + ImGui::GetTextLineHeight() * 0.5f - 3.0f;
-    draw->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + 6.0f, y + 6.0f),
+    const float  dot = s(6.0f);
+    const float  y   = p.y + ImGui::GetTextLineHeight() * 0.5f - dot * 0.5f;
+    draw->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + dot, y + dot),
                          tokens::acc);
-    ImGui::Dummy(ImVec2(6.0f + tokens::sp_3, ImGui::GetTextLineHeight()));
-    ImGui::SameLine(0.0f, tokens::sp_2);
+    ImGui::Dummy(ImVec2(dot + s(tokens::sp_3), ImGui::GetTextLineHeight()));
+    ImGui::SameLine(0.0f, s(tokens::sp_2));
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::acc));
     ImGui::TextUnformatted("METAL ENGINE");
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_2);
+    ImGui::SameLine(0.0f, s(tokens::sp_2));
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_3));
     const auto v = mge::core::engine_version();
     ImGui::Text("v%u.%u.%u", v.major, v.minor, v.patch);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_4);
+    ImGui::SameLine(0.0f, s(tokens::sp_4));
 }
 
 void menu_item(const char* label) {
     // Match .menubar .m-item: 12 px, 4×8 padding, 2 px radius, hover bg-3.
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(tokens::sp_4, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(s(tokens::sp_4), 4.0f));
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col(tokens::bg_3));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  col(tokens::bg_4));
     ImGui::Button(label);
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
-    ImGui::SameLine(0.0f, tokens::sp_1);
+    ImGui::SameLine(0.0f, s(tokens::sp_1));
 }
 
 void meta_kv(const char* k, const char* v, ImU32 v_col = tokens::fg_2) {
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
     ImGui::TextUnformatted(k);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_2);
+    ImGui::SameLine(0.0f, s(tokens::sp_2));
     ImGui::PushStyleColor(ImGuiCol_Text, col(v_col));
     ImGui::TextUnformatted(v);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_5);
+    ImGui::SameLine(0.0f, s(tokens::sp_5));
 }
 
 // Render-only "readout" pill: framed key + value, monospace, used in the
@@ -89,20 +90,20 @@ void readout(const char* k, const char* v, ImU32 v_col = tokens::fg_1) {
     ImGui::PushStyleColor(ImGuiCol_Border,  col(tokens::bd_2));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, col(tokens::bg_2));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,    ImVec2(tokens::sp_4, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,    ImVec2(s(tokens::sp_4), 4.0f));
 
     const ImVec2 text_size = ImGui::CalcTextSize(k);
     const float  v_size    = ImGui::CalcTextSize(v).x;
-    const float  width     = text_size.x + v_size + tokens::sp_4 * 2.0f + tokens::sp_3;
+    const float  width     = text_size.x + v_size + s(tokens::sp_4) * 2.0f + s(tokens::sp_3);
 
     ImGui::PushID(k);
-    ImGui::BeginChild("##rd", ImVec2(width, tokens::button_h),
+    ImGui::BeginChild("##rd", ImVec2(width, s(tokens::button_h)),
                        ImGuiChildFlags_FrameStyle | ImGuiChildFlags_AutoResizeY,
                        ImGuiWindowFlags_NoScrollbar);
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
     ImGui::TextUnformatted(k);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_3);
+    ImGui::SameLine(0.0f, s(tokens::sp_3));
     ImGui::PushStyleColor(ImGuiCol_Text, col(v_col));
     ImGui::TextUnformatted(v);
     ImGui::PopStyleColor();
@@ -111,11 +112,11 @@ void readout(const char* k, const char* v, ImU32 v_col = tokens::fg_1) {
 
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
-    ImGui::SameLine(0.0f, tokens::sp_2);
+    ImGui::SameLine(0.0f, s(tokens::sp_2));
 }
 
 void draw_menubar() {
-    begin_chrome_bar("##menubar", tokens::menubar_h, tokens::bg_1);
+    begin_chrome_bar("##menubar", s(tokens::menubar_h), tokens::bg_1);
     draw_brand();
 
     const char* items[] = {"File", "Edit", "Scene", "View", "Render",
@@ -123,7 +124,7 @@ void draw_menubar() {
     for (const char* it : items) menu_item(it);
 
     // Right-aligned meta block.
-    const float right_w = 480.0f;
+    const float right_w = s(480.0f);
     ImGui::SameLine(ImGui::GetWindowWidth() - right_w);
     meta_kv("scene", "procedural_demo.scn");
     meta_kv("build", "Release · arm64");
@@ -136,7 +137,7 @@ void draw_menubar() {
 }
 
 void draw_toolbar(const EngineState& state) {
-    begin_chrome_bar("##toolbar", tokens::toolbar_h, tokens::bg_1);
+    begin_chrome_bar("##toolbar", s(tokens::toolbar_h), tokens::bg_1);
 
     // Gizmo group: Translate / Rotate / Scale (stub buttons for M18; wire up
     // to real engine state in M19).
@@ -149,15 +150,15 @@ void draw_toolbar(const EngineState& state) {
         ImGui::PushStyleColor(ImGuiCol_Text,
             col(on ? tokens::acc : tokens::fg_2));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                              ImVec2(tokens::sp_4, 4.0f));
+                              ImVec2(s(tokens::sp_4), 4.0f));
         if (ImGui::Button(gizmos[i])) gizmo = i;
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(2);
-        ImGui::SameLine(0.0f, tokens::sp_1);
+        ImGui::SameLine(0.0f, s(tokens::sp_1));
     }
 
-    ImGui::Dummy(ImVec2(tokens::sp_3, 0.0f));
-    ImGui::SameLine(0.0f, tokens::sp_3);
+    ImGui::Dummy(ImVec2(s(tokens::sp_3), 0.0f));
+    ImGui::SameLine(0.0f, s(tokens::sp_3));
 
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(state.ms_avg));
@@ -174,7 +175,7 @@ void draw_toolbar(const EngineState& state) {
     readout("sim",   buf);
 
     // Right-aligned ⌘K hint, like the design's "Run command" pill.
-    const float right_w = 200.0f;
+    const float right_w = s(200.0f);
     ImGui::SameLine(ImGui::GetWindowWidth() - right_w);
     readout("⌘K", "Run command", tokens::fg_4);
 
@@ -182,16 +183,16 @@ void draw_toolbar(const EngineState& state) {
 }
 
 void draw_statusbar(const EngineState& state) {
-    begin_chrome_bar("##statusbar", tokens::statusbar_h, tokens::bg_0);
+    begin_chrome_bar("##statusbar", s(tokens::statusbar_h), tokens::bg_0);
 
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
     ImGui::TextUnformatted("branch");
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_2);
+    ImGui::SameLine(0.0f, s(tokens::sp_2));
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
     ImGui::TextUnformatted("main");
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_6);
+    ImGui::SameLine(0.0f, s(tokens::sp_6));
 
     char buf[80];
     std::snprintf(buf, sizeof(buf), "cubes %u / %u",
@@ -199,13 +200,13 @@ void draw_statusbar(const EngineState& state) {
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
     ImGui::TextUnformatted(buf);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_6);
+    ImGui::SameLine(0.0f, s(tokens::sp_6));
 
     std::snprintf(buf, sizeof(buf), "hzb %u occ", state.hzb_occluded);
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
     ImGui::TextUnformatted(buf);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_6);
+    ImGui::SameLine(0.0f, s(tokens::sp_6));
 
     std::snprintf(buf, sizeof(buf), "particles %u", state.particles);
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
@@ -213,14 +214,14 @@ void draw_statusbar(const EngineState& state) {
     ImGui::PopStyleColor();
 
     // Right side: connected indicator + step count.
-    const float right_w = 220.0f;
+    const float right_w = s(220.0f);
     ImGui::SameLine(ImGui::GetWindowWidth() - right_w);
     std::snprintf(buf, sizeof(buf), "steps %llu",
                   static_cast<unsigned long long>(state.step_count));
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_3));
     ImGui::TextUnformatted(buf);
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, tokens::sp_5);
+    ImGui::SameLine(0.0f, s(tokens::sp_5));
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::ok));
     ImGui::TextUnformatted("● live");
     ImGui::PopStyleColor();
@@ -230,17 +231,17 @@ void draw_statusbar(const EngineState& state) {
 
 void draw_panel_placeholder(const char* title, const char* count_hint) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                          ImVec2(tokens::sp_4, 0.0f));
+                          ImVec2(s(tokens::sp_4), 0.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_1));
-    ImGui::BeginChild("##phdr", ImVec2(0.0f, tokens::panel_hdr_h),
+    ImGui::BeginChild("##phdr", ImVec2(0.0f, s(tokens::panel_hdr_h)),
                        ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
-    const float pad_y = (tokens::panel_hdr_h - ImGui::GetTextLineHeight()) * 0.5f;
+    const float pad_y = (s(tokens::panel_hdr_h) - ImGui::GetTextLineHeight()) * 0.5f;
     if (pad_y > 0.0f) ImGui::SetCursorPosY(pad_y);
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_2));
     ImGui::TextUnformatted(title);
     ImGui::PopStyleColor();
     if (count_hint && *count_hint) {
-        ImGui::SameLine(0.0f, tokens::sp_3);
+        ImGui::SameLine(0.0f, s(tokens::sp_3));
         ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
         ImGui::TextUnformatted(count_hint);
         ImGui::PopStyleColor();
@@ -258,7 +259,7 @@ void draw_panel_placeholder(const char* title, const char* count_hint) {
 
     // Body — M18 placeholder text. Real content arrives in M19+.
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(tokens::sp_5, 14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(s(tokens::sp_5), 14.0f));
     ImGui::TextWrapped("M18 placeholder. M19 wires this panel up.");
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
@@ -291,10 +292,10 @@ void draw_chrome(const EngineState& state) {
 
     // Three-column workarea: left (outliner), center (viewport), right (inspector).
     const float total_h     = ImGui::GetContentRegionAvail().y
-                              - tokens::dock_bottom_h - tokens::statusbar_h;
+                              - s(tokens::dock_bottom_h) - s(tokens::statusbar_h);
     const float center_w    = ImGui::GetContentRegionAvail().x
-                              - tokens::left_panel_w - tokens::right_panel_w;
-    const ImVec2 panel_size = ImVec2(tokens::left_panel_w, total_h);
+                              - s(tokens::left_panel_w) - s(tokens::right_panel_w);
+    const ImVec2 panel_size = ImVec2(s(tokens::left_panel_w), total_h);
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
@@ -306,17 +307,20 @@ void draw_chrome(const EngineState& state) {
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, 0.0f);
 
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_0));
+    // Center column is transparent — the rasterized engine output shows
+    // through unaltered. NoBackground on the child + transparent ChildBg.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Border,  ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("##center", ImVec2(center_w, total_h),
-                       ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-    // The center is intentionally transparent so the rasterized engine output
-    // shows through unaltered. We draw nothing here in M18.
+                       ImGuiChildFlags_None,
+                       ImGuiWindowFlags_NoScrollbar |
+                       ImGuiWindowFlags_NoBackground);
     ImGui::EndChild();
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);
     ImGui::SameLine(0.0f, 0.0f);
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_1));
-    ImGui::BeginChild("##right", ImVec2(tokens::right_panel_w, total_h),
+    ImGui::BeginChild("##right", ImVec2(s(tokens::right_panel_w), total_h),
                        ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
     draw_panel_placeholder("INSPECTOR", "");
     ImGui::EndChild();
@@ -325,7 +329,7 @@ void draw_chrome(const EngineState& state) {
     // Bottom dock — tab strip placeholder.
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col(tokens::bg_1));
     ImGui::BeginChild("##dock_bottom",
-                       ImVec2(0.0f, tokens::dock_bottom_h),
+                       ImVec2(0.0f, s(tokens::dock_bottom_h)),
                        ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
 
     // Tab row.
@@ -334,7 +338,7 @@ void draw_chrome(const EngineState& state) {
     static int active_tab = 0;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                          ImVec2(tokens::sp_5, 6.0f));
+                          ImVec2(s(tokens::sp_5), 6.0f));
     for (int i = 0; i < IM_ARRAYSIZE(tabs); ++i) {
         const bool on = active_tab == i;
         ImGui::PushStyleColor(ImGuiCol_Button,
@@ -350,7 +354,7 @@ void draw_chrome(const EngineState& state) {
 
     // Tab body placeholder.
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-    ImGui::SetCursorPos(ImVec2(tokens::sp_5, 48.0f));
+    ImGui::SetCursorPos(ImVec2(s(tokens::sp_5), s(48.0f)));
     ImGui::Text("M18 placeholder · %s panel wires up in M19/M20.", tabs[active_tab]);
     ImGui::PopStyleColor();
 

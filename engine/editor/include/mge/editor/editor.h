@@ -64,9 +64,12 @@ class Editor {
 public:
     // Create the editor over an existing RHI device + native NSWindow. The
     // backbuffer format must match the swapchain so the editor's render
-    // pipeline can target it directly. Returns nullptr on backend failure.
+    // pipeline can target it directly. `dpi_scale` is
+    // `drawable_size / logical_size` for the window (2.0 on Retina) — every
+    // explicit pixel size in the design system is multiplied by it.
     [[nodiscard]] static std::unique_ptr<Editor> create(
-        rhi::Device& device, void* native_window, rhi::PixelFormat backbuffer_fmt);
+        rhi::Device& device, void* native_window, rhi::PixelFormat backbuffer_fmt,
+        float dpi_scale = 1.0f);
 
     ~Editor();
     Editor(const Editor&)            = delete;
