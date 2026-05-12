@@ -5,6 +5,7 @@
 
 #include "mge/renderer/metal/metal_cpp.h"
 #include "mge/rhi/enums.h"
+#include "mge/rhi/sampler.h"
 
 namespace mge::rhi::metal_backend {
 
@@ -115,6 +116,30 @@ namespace mge::rhi::metal_backend {
 
 [[nodiscard]] inline MTL::IndexType to_mtl(IndexType t) noexcept {
     return t == IndexType::UInt16 ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32;
+}
+
+[[nodiscard]] inline MTL::SamplerMinMagFilter to_mtl(FilterMode f) noexcept {
+    return f == FilterMode::Linear ? MTL::SamplerMinMagFilterLinear
+                                   : MTL::SamplerMinMagFilterNearest;
+}
+
+[[nodiscard]] inline MTL::SamplerMipFilter to_mtl(MipFilter f) noexcept {
+    switch (f) {
+        case MipFilter::NotMipmapped: return MTL::SamplerMipFilterNotMipmapped;
+        case MipFilter::Nearest:      return MTL::SamplerMipFilterNearest;
+        case MipFilter::Linear:       return MTL::SamplerMipFilterLinear;
+    }
+    return MTL::SamplerMipFilterNotMipmapped;
+}
+
+[[nodiscard]] inline MTL::SamplerAddressMode to_mtl(AddressMode a) noexcept {
+    switch (a) {
+        case AddressMode::Repeat:       return MTL::SamplerAddressModeRepeat;
+        case AddressMode::MirrorRepeat: return MTL::SamplerAddressModeMirrorRepeat;
+        case AddressMode::ClampToEdge:  return MTL::SamplerAddressModeClampToEdge;
+        case AddressMode::ClampToZero:  return MTL::SamplerAddressModeClampToZero;
+    }
+    return MTL::SamplerAddressModeClampToEdge;
 }
 
 [[nodiscard]] inline MTL::VertexFormat to_mtl(VertexFormat f) noexcept {

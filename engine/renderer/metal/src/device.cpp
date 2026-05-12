@@ -110,6 +110,29 @@ std::unique_ptr<Texture> Device::create_texture(const TextureDesc& desc) {
     return std::unique_ptr<Texture>(new Texture(tex, desc, /*owned=*/true));
 }
 
+std::unique_ptr<Sampler> Device::create_sampler(const SamplerDesc& desc) {
+    auto* dev = static_cast<MTL::Device*>(native_);
+
+    MTL::SamplerDescriptor* sd = MTL::SamplerDescriptor::alloc()->init();
+    sd->setMinFilter(mb::to_mtl(desc.min_filter));
+    sd->setMagFilter(mb::to_mtl(desc.mag_filter));
+    sd->setMipFilter(mb::to_mtl(desc.mip_filter));
+    sd->setSAddressMode(mb::to_mtl(desc.address_u));
+    sd->setTAddressMode(mb::to_mtl(desc.address_v));
+    sd->setRAddressMode(mb::to_mtl(desc.address_w));
+    sd->setMaxAnisotropy(desc.max_anisotropy);
+    if (!desc.label.empty()) {
+        sd->setLabel(mb::ns_str(desc.label));
+    }
+
+    MTL::SamplerState* state = dev->newSamplerState(sd);
+    sd->release();
+    if (state == nullptr) {
+        return nullptr;
+    }
+    return std::unique_ptr<Sampler>(new Sampler(state, desc.label));
+}
+
 std::unique_ptr<Shader> Device::create_shader_from_msl(const ShaderSourceDesc& desc) {
     auto* dev = static_cast<MTL::Device*>(native_);
 

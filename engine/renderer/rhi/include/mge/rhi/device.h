@@ -3,6 +3,7 @@
 #include "mge/rhi/buffer.h"
 #include "mge/rhi/pipeline.h"
 #include "mge/rhi/queue.h"
+#include "mge/rhi/sampler.h"
 #include "mge/rhi/shader.h"
 #include "mge/rhi/swapchain.h"
 #include "mge/rhi/texture.h"
@@ -34,6 +35,7 @@ public:
     [[nodiscard]] std::unique_ptr<Queue>          create_queue(std::string label = "default");
     [[nodiscard]] std::unique_ptr<Buffer>         create_buffer(const BufferDesc& desc);
     [[nodiscard]] std::unique_ptr<Texture>        create_texture(const TextureDesc& desc);
+    [[nodiscard]] std::unique_ptr<Sampler>        create_sampler(const SamplerDesc& desc);
     [[nodiscard]] std::unique_ptr<Shader>         create_shader_from_msl(const ShaderSourceDesc& desc);
     [[nodiscard]] std::unique_ptr<RenderPipeline> create_render_pipeline(const RenderPipelineDesc& desc);
 

@@ -100,6 +100,32 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/rhi
 - **Created**: 2026-05-12, downgraded 2026-05-12
 
+## New debt opened in M6
+
+### [P1-PBR-IBL-001] No IBL yet
+- **What**: M6 ships direct lighting only (one directional sun + ambient term). No image-based lighting → indirect diffuse and specular are crude.
+- **Why now**: IBL needs (a) HDR equirectangular loader, (b) compute pipeline to bake irradiance + prefiltered specular cube, (c) BRDF LUT generation. That's a full milestone on its own.
+- **Cost if left**: Scenes look "ambient-flat" — no reflections, no environment colour bleed.
+- **Fix path**: M6.1 (post-M11): add compute pipeline support to RHI; HDR equirectangular loader; offline (or first-frame) IBL baking; split-sum sampling in the lighting pass.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
+### [P1-PBR-MULTISCATTER-001] No multiscatter compensation
+- **What**: Lighting uses single-scattering GGX. Energy lost to internal microfacet scattering is not redistributed; high-roughness metals look dimmer than they should.
+- **Why now**: Most visible alongside IBL anyway. Direct-lighting-only is forgiving.
+- **Cost if left**: ~10-15% energy loss at roughness ≈ 0.8 with metals.
+- **Fix path**: Fdez-Agüera 2019 (analytic, no LUT needed). ~5 lines in the lighting fragment shader.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
+### [P1-PBR-LIGHTS-001] Single directional light, no clustering
+- **What**: Lighting pass hard-codes one sun. No point/spot lights. No clustered light culling.
+- **Why now**: M6 budget priorisation. Forward+ transparent pass + clustered cull comes when we need ≥2 lights.
+- **Cost if left**: Cannot do interior scenes with multiple punctual lights.
+- **Fix path**: Add `LightArray` uniform + cluster pass (compute) writing per-cluster light index list. Phase 1.5 / Phase 2.
+- **Owner**: renderer
+- **Created**: 2026-05-12
+
 ## New debt opened in M5
 
 ### [P1-FG-BARRIERS-001] No automatic barriers / transitions yet

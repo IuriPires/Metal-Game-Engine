@@ -12,6 +12,7 @@ namespace mge::rhi {
 
 class Buffer;
 class Texture;
+class Sampler;
 
 struct ColorAttachment {
     Texture*    texture        = nullptr;     // owned by caller; not retained
@@ -58,6 +59,8 @@ public:
     void set_pipeline(RenderPipeline& pipeline);
     void set_vertex_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset = 0);
     void set_fragment_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset = 0);
+    void set_fragment_texture(Texture& texture, std::uint32_t slot);
+    void set_fragment_sampler(Sampler& sampler, std::uint32_t slot);
     void set_viewport(Viewport vp);
 
     void draw(std::uint32_t vertex_count, std::uint32_t instance_count = 1,

@@ -10,6 +10,7 @@
 #include "mge/rhi/enums.h"
 #include "mge/rhi/pipeline.h"
 #include "mge/rhi/queue.h"
+#include "mge/rhi/sampler.h"
 #include "mge/rhi/shader.h"
 #include "mge/rhi/swapchain.h"
 #include "mge/rhi/texture.h"

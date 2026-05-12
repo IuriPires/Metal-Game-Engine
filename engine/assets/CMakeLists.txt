@@ -4,6 +4,7 @@
 
 add_library(mge_assets STATIC
     src/primitives.cpp
+    src/pbr_primitives.cpp
 )
 
 target_include_directories(mge_assets

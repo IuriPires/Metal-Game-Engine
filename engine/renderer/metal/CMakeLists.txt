@@ -12,6 +12,7 @@ add_library(mge_rhi_metal STATIC
     src/encoder.cpp
     src/buffer.cpp
     src/texture.cpp
+    src/sampler.cpp
     src/shader.cpp
     src/pipeline.cpp
     src/swapchain.cpp

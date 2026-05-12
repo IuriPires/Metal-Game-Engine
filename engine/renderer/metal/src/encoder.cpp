@@ -2,6 +2,8 @@
 
 #include "mge/rhi/buffer.h"
 #include "mge/rhi/pipeline.h"
+#include "mge/rhi/sampler.h"
+#include "mge/rhi/texture.h"
 
 #include "format_conv.h"
 #include "mge/renderer/metal/metal_cpp.h"
@@ -43,6 +45,16 @@ void RenderEncoder::set_fragment_buffer(Buffer& buffer, std::uint32_t slot,
                                          std::size_t offset) {
     auto* enc = static_cast<MTL::RenderCommandEncoder*>(native_);
     enc->setFragmentBuffer(static_cast<MTL::Buffer*>(buffer.native()), offset, slot);
+}
+
+void RenderEncoder::set_fragment_texture(Texture& texture, std::uint32_t slot) {
+    auto* enc = static_cast<MTL::RenderCommandEncoder*>(native_);
+    enc->setFragmentTexture(static_cast<MTL::Texture*>(texture.native()), slot);
+}
+
+void RenderEncoder::set_fragment_sampler(Sampler& sampler, std::uint32_t slot) {
+    auto* enc = static_cast<MTL::RenderCommandEncoder*>(native_);
+    enc->setFragmentSamplerState(static_cast<MTL::SamplerState*>(sampler.native()), slot);
 }
 
 void RenderEncoder::set_viewport(Viewport vp) {

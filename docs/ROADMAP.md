@@ -58,13 +58,18 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [—] Mock RHI backend (deferred — compile() is testable directly; integration tests cover execute())
   - [—] Automatic barriers/transitions (deferred — Metal auto-tracks dependencies in v1)
   - [—] Async compute / split barriers / subpasses (Phase 1.5)
-- [ ] **M6 — Deferred PBR + IBL**
-  - [ ] G-Buffer pass
-  - [ ] Clustered light culling (compute)
-  - [ ] PBR BRDF (GGX-Smith + multiscatter compensation)
-  - [ ] Prefiltered IBL pipeline (offline tool)
-  - [ ] BRDF LUT generation
-  - [ ] Golden: furnace test, reference scene
+- [x] **M6 — Deferred PBR (direct lighting)**
+  - [x] **RHI Sampler** type + `Device::create_sampler` + `RenderEncoder::set_fragment_texture`/`set_fragment_sampler`
+  - [x] `engine/assets::PbrVertex` (32 B, pos+normal) + `make_sphere_pbr(lat, lon)` + `make_cube_pbr`
+  - [x] **G-Buffer pass**: RGBA8 (albedo+ao) + RGBA16F (octa-normal+roughness+metallic) + Depth32F. CCW back-cull, depth Less, write.
+  - [x] **Deferred lighting pass**: fullscreen quad via `vertex_id`, samples G-Buffer + depth, reconstructs world position from inverse view-projection, GGX-Smith correlated visibility + Schlick Fresnel + Lambert diffuse, single directional sun + ambient term. Writes HDR (RGBA16F).
+  - [x] **Tonemap pass**: Reinhard `c/(1+c)` → sRGB backbuffer (ACES at M9).
+  - [x] 3-pass FrameGraph: gbuffer → lighting → tonemap. Demo: row of 5 spheres varying (metallic, roughness) shows the material spectrum.
+  - [x] Unit tests for PBR primitives (sphere on unit hull, normal=position, indices valid).
+  - [—] **Clustered light culling** (deferred — single directional sun for M6; multi-light wants M7+)
+  - [—] **Multiscatter compensation** (deferred — single-scattering GGX visible loss only at extreme roughness; Fdez-Agüera at M6.1)
+  - [—] **IBL** (irradiance + prefiltered specular + BRDF LUT) — deferred to M6.1, needs compute pipeline + HDR env map loader
+  - [—] **Furnace test** (deferred to M9 with perceptual diff harness)
 - [ ] **M7 — CSM shadows**
   - [ ] 4-cascade CSM
   - [ ] PCF 3×3 filtering
