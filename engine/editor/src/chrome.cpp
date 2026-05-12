@@ -79,7 +79,10 @@ void meta_kv(const char* k, const char* v, ImU32 v_col = tokens::fg_2) {
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, s(tokens::sp_2));
     ImGui::PushStyleColor(ImGuiCol_Text, col(v_col));
-    ImGui::TextUnformatted(v);
+    {
+        ScopedMonoFont _;     // data values render in monospace
+        ImGui::TextUnformatted(v);
+    }
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, s(tokens::sp_5));
 }
@@ -92,21 +95,29 @@ void readout(const char* k, const char* v, ImU32 v_col = tokens::fg_1) {
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,    ImVec2(s(tokens::sp_4), 4.0f));
 
+    // Pre-measure with the mono font so the pill auto-sizes to its contents.
+    if (auto* mf = fonts().mono) ImGui::PushFont(mf);
     const ImVec2 text_size = ImGui::CalcTextSize(k);
     const float  v_size    = ImGui::CalcTextSize(v).x;
+    if (fonts().mono) ImGui::PopFont();
     const float  width     = text_size.x + v_size + s(tokens::sp_4) * 2.0f + s(tokens::sp_3);
 
     ImGui::PushID(k);
     ImGui::BeginChild("##rd", ImVec2(width, s(tokens::button_h)),
                        ImGuiChildFlags_FrameStyle | ImGuiChildFlags_AutoResizeY,
                        ImGuiWindowFlags_NoScrollbar);
-    ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
-    ImGui::TextUnformatted(k);
-    ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, s(tokens::sp_3));
-    ImGui::PushStyleColor(ImGuiCol_Text, col(v_col));
-    ImGui::TextUnformatted(v);
-    ImGui::PopStyleColor();
+    {
+        // ImGui requires Push/Pop to balance within a window — keep the
+        // ScopedMonoFont lifetime strictly inside BeginChild/EndChild.
+        ScopedMonoFont _;
+        ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
+        ImGui::TextUnformatted(k);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, s(tokens::sp_3));
+        ImGui::PushStyleColor(ImGuiCol_Text, col(v_col));
+        ImGui::TextUnformatted(v);
+        ImGui::PopStyleColor();
+    }
     ImGui::EndChild();
     ImGui::PopID();
 
@@ -185,6 +196,10 @@ void draw_toolbar(const EngineState& state) {
 
 void draw_statusbar(const EngineState& state) {
     begin_chrome_bar("##statusbar", s(tokens::statusbar_h), tokens::bg_0);
+    // Mono lifetime must end before end_chrome_bar's EndChild — explicit
+    // block scope keeps Push/Pop balanced within this child window.
+  {
+    ScopedMonoFont _;
 
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::fg_4));
     ImGui::TextUnformatted("branch");
@@ -226,6 +241,7 @@ void draw_statusbar(const EngineState& state) {
     ImGui::PushStyleColor(ImGuiCol_Text, col(tokens::ok));
     ImGui::TextUnformatted("* live");  // M19 swaps for the proper bullet
     ImGui::PopStyleColor();
+  }  // ScopedMonoFont _
 
     end_chrome_bar(tokens::bd_1);
 }

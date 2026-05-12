@@ -19,6 +19,7 @@ std::unique_ptr<Editor> Editor::create(rhi::Device& device,
     io.IniFilename  = nullptr;  // Phase 1.5: don't persist layouts to disk yet.
 
     apply_theme(dpi_scale);
+    (void)load_fonts(dpi_scale);  // result stored in theme.cpp static
 
     if (!platform::init_metal(device.native())) {
         ImGui::DestroyContext();

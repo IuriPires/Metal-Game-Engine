@@ -2,9 +2,54 @@
 
 namespace mge::editor {
 
-namespace { float g_dpi_scale = 1.0f; }
+namespace {
+    float   g_dpi_scale = 1.0f;
+    FontSet g_fonts;
+}
 
 float current_dpi_scale() noexcept { return g_dpi_scale; }
+
+const FontSet& fonts() noexcept { return g_fonts; }
+
+FontSet load_fonts(float dpi_scale) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+    g_fonts = {};
+
+    // macOS ships SF Pro + SF Mono at standard paths since Big Sur. They are
+    // the system equivalents of Inter + JetBrains Mono respectively (the
+    // design system reference fonts). Loading them avoids vendoring TTFs.
+    constexpr const char* kSansPath = "/System/Library/Fonts/SFNS.ttf";
+    constexpr const char* kMonoPath = "/System/Library/Fonts/SFNSMono.ttf";
+
+    // Base size = 13 px logical (≈ Inter 12 from the design once subpixel
+    // positioning kicks in). Multiplied by DPI scale so the font is sharp at
+    // physical-pixel size on Retina.
+    const float sans_size = 13.0f * (dpi_scale > 1.0f ? dpi_scale : 1.0f);
+    const float mono_size = 12.0f * (dpi_scale > 1.0f ? dpi_scale : 1.0f);
+
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    cfg.PixelSnapH  = false;
+
+    g_fonts.sans = io.Fonts->AddFontFromFileTTF(kSansPath, sans_size, &cfg);
+    g_fonts.mono = io.Fonts->AddFontFromFileTTF(kMonoPath, mono_size, &cfg);
+
+    if (g_fonts.sans == nullptr) {
+        // System path missing — fall back to ImGui's built-in bitmap font.
+        io.Fonts->AddFontDefault();
+    }
+    // No io.Fonts->Build() — the new ImGui Metal backend (docking HEAD)
+    // lazy-builds the atlas the first time it's needed. Calling Build() now
+    // triggers an assert because RendererHasTextures isn't set yet.
+
+    // FontGlobalScale already accounted for via per-font size; reset it so
+    // we don't double-scale.
+    io.FontGlobalScale = 1.0f;
+
+    return g_fonts;
+}
 
 void apply_theme(float dpi_scale) {
     g_dpi_scale = dpi_scale;
@@ -125,11 +170,10 @@ void apply_theme(float dpi_scale) {
     // —— DPI scaling —— ScaleAllSizes multiplies every spacing/padding/size
     // value already set above. Calling it ONCE at theme apply time means we
     // get sharp, properly-sized chrome on Retina without rewriting every
-    // numeric token. Font scaling separately so the default bitmap font
-    // looks right (M19 will load TTFs at the scaled size for crisper text).
+    // numeric token. Fonts are loaded separately at the scaled size (see
+    // load_fonts()), so FontGlobalScale stays at 1.0.
     if (dpi_scale > 1.001f) {
         s.ScaleAllSizes(dpi_scale);
-        ImGui::GetIO().FontGlobalScale = dpi_scale;
     }
 }
 

@@ -85,6 +85,31 @@ void apply_theme(float dpi_scale = 1.0f);
 [[nodiscard]] float current_dpi_scale() noexcept;
 [[nodiscard]] inline float s(float v) noexcept { return v * current_dpi_scale(); }
 
+// Loaded once at editor startup; both are nullptr if the system fonts are
+// missing (M18 fallback used the ImGui default bitmap font). The chrome
+// pushes `font_mono` for any numeric / data / readout text; everything else
+// uses the active default (`font_sans`).
+struct FontSet {
+    ImFont* sans = nullptr;
+    ImFont* mono = nullptr;
+};
+
+[[nodiscard]] FontSet load_fonts(float dpi_scale);
+[[nodiscard]] const FontSet& fonts() noexcept;
+
+// RAII helper: push `font_mono` for the lifetime of this object.
+class ScopedMonoFont {
+public:
+    ScopedMonoFont() {
+        if (auto* f = fonts().mono) { ImGui::PushFont(f); pushed_ = true; }
+    }
+    ~ScopedMonoFont() { if (pushed_) ImGui::PopFont(); }
+    ScopedMonoFont(const ScopedMonoFont&)            = delete;
+    ScopedMonoFont& operator=(const ScopedMonoFont&) = delete;
+private:
+    bool pushed_ = false;
+};
+
 // Convert a packed RGBA8 ImU32 to an ImVec4 the ImGui colors table expects.
 [[nodiscard]] inline ImVec4 col(ImU32 c) {
     const float r = ((c >> IM_COL32_R_SHIFT) & 0xFFu) / 255.0f;
