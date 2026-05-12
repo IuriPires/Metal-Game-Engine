@@ -8,6 +8,9 @@ RenderPipeline::~RenderPipeline() {
     if (native_ != nullptr) {
         static_cast<MTL::RenderPipelineState*>(native_)->release();
     }
+    if (native_depth_ != nullptr) {
+        static_cast<MTL::DepthStencilState*>(native_depth_)->release();
+    }
 }
 
 }  // namespace mge::rhi

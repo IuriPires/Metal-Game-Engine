@@ -21,6 +21,7 @@
 
 @interface MGEWindowDelegate : NSObject <NSWindowDelegate>
 @property(nonatomic) BOOL closed;
+@property(nonatomic) BOOL resized;
 @end
 
 @implementation MGEWindowDelegate
@@ -32,6 +33,14 @@
 - (void)windowWillClose:(NSNotification*)note {
     (void)note;
     self.closed = YES;
+}
+- (void)windowDidResize:(NSNotification*)note {
+    (void)note;
+    self.resized = YES;
+}
+- (void)windowDidChangeBackingProperties:(NSNotification*)note {
+    (void)note;
+    self.resized = YES;
 }
 @end
 
@@ -151,6 +160,22 @@ std::uint32_t Window::drawable_width() const noexcept {
 std::uint32_t Window::drawable_height() const noexcept {
     @autoreleasepool {
         return static_cast<std::uint32_t>([impl_->layer drawableSize].height);
+    }
+}
+
+bool Window::consume_resize_event() noexcept {
+    @autoreleasepool {
+        const BOOL was = impl_->delegate.resized;
+        impl_->delegate.resized = NO;
+        if (was) {
+            // Sync the CAMetalLayer drawable size to the view's backing size.
+            const CGSize  vsize  = [impl_->view convertSizeToBacking:[impl_->view bounds].size];
+            const CGFloat scale  = [[impl_->ns_window screen] backingScaleFactor];
+            const CGFloat draw_w = vsize.width  > 0.0 ? vsize.width  : [impl_->view bounds].size.width  * scale;
+            const CGFloat draw_h = vsize.height > 0.0 ? vsize.height : [impl_->view bounds].size.height * scale;
+            [impl_->layer setDrawableSize:CGSizeMake(draw_w, draw_h)];
+        }
+        return was == YES;
     }
 }
 

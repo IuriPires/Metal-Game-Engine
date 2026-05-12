@@ -73,7 +73,9 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 
 ## Closed debt
 
-- **P1-OBJC-001** — Obj-C++ shim at platform edge: resolved in M1. See entry above and ADR-0001.
+- **P1-OBJC-001** — Obj-C++ shim at platform edge: resolved in M1.
+- **P1-WINDOW-001** — Window resize handling: resolved in M4.
+- **P1-RHI-DRAW-001** — RenderEncoder topology hardcode: resolved in M4.
 
 ## New debt opened in M1
 
@@ -85,13 +87,8 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/metal
 - **Created**: 2026-05-12
 
-### [P1-WINDOW-001] No window resize handling yet
-- **What**: `mge::platform::Window` does not react to user-driven resize. The CAMetalLayer's `drawableSize` stays at construction values.
-- **Why now**: Demo doesn't need it; the resize event plumbing wants a real input/event system, which lands in M4.
-- **Cost if left**: Resizing the demo window produces stretched / cropped output. Not crash-worthy.
-- **Fix path**: NSWindowDelegate's `windowDidResize:` + `Swapchain::resize` call. Move to M4 alongside the camera controller.
-- **Owner**: platform
-- **Created**: 2026-05-12
+### [P1-WINDOW-001] Window resize handling — RESOLVED (M4, 2026-05-12)
+- **Decision**: `MGEWindowDelegate` now observes `windowDidResize:` / `windowDidChangeBackingProperties:`. `Window::consume_resize_event()` returns a one-shot bool and resyncs the CAMetalLayer's `drawableSize` to the view's backing size. hello_metal calls `Swapchain::resize` and reallocates the depth texture on each event; the camera updates its aspect.
 
 ## New debt opened in M3
 
@@ -111,10 +108,23 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: renderer/metal
 - **Created**: 2026-05-12
 
-### [P1-RHI-DRAW-001] RenderEncoder hard-codes TriangleList for now
-- **What**: `RenderEncoder::draw` ignores `RenderPipeline::topology()` and always passes `MTL::PrimitiveTypeTriangle`.
-- **Why now**: TriangleList is the only consumer in M3. Adding the lookup added test surface without a customer.
-- **Cost if left**: M4+ may want strips / lines / points and hit this immediately.
-- **Fix path**: Cache topology in encoder per `set_pipeline` call, use it in `draw`. Easy fix.
-- **Owner**: renderer/metal
+### [P1-RHI-DRAW-001] RenderEncoder hard-codes TriangleList — RESOLVED (M4, 2026-05-12)
+- **Decision**: `RenderEncoder` caches `topology_` during `set_pipeline()` and forwards it to both `drawPrimitives` and `drawIndexedPrimitives`. Strip / line / point pipelines now route correctly.
+
+## New debt opened in M4
+
+### [P1-CGLTF-001] Procedural primitives only — no asset loader yet
+- **What**: M4 ships `make_cube` but no glTF / glb loader. The cgltf dep is still declared-not-active in `third_party/CMakeLists.txt`.
+- **Why now**: Procedural primitives cover the M4 demo and integration test without paying for asset I/O.
+- **Cost if left**: M5+ cannot demo realistic scenes (Sponza-class).
+- **Fix path**: Enable cgltf via FetchContent; write a minimal loader that produces an `assets::Mesh` from a single-primitive glTF file. Add a stb_image-backed texture loader at M6.
+- **Owner**: assets
+- **Created**: 2026-05-12
+
+### [P1-INPUT-001] No input system - camera is fixed
+- **What**: `App::poll_events()` drains NSApp's queue but doesn't expose keyboard/mouse state to higher layers. The M4 demo orbits the cube via wall-clock time.
+- **Why now**: An FPS controller wants keyboard polling + mouse delta; that's a non-trivial input subsystem out of scope for M4.
+- **Cost if left**: No interactive camera, no editor-style nav.
+- **Fix path**: Add `mge::platform::Input` with keystate + mouse delta, drained inside `poll_events`. Pencil for M5 alongside the frame graph.
+- **Owner**: platform
 - **Created**: 2026-05-12

@@ -86,6 +86,37 @@ namespace mge::rhi::metal_backend {
     return MTL::PrimitiveTypeTriangle;
 }
 
+[[nodiscard]] inline MTL::CompareFunction to_mtl(DepthCompare c) noexcept {
+    switch (c) {
+        case DepthCompare::Never:        return MTL::CompareFunctionNever;
+        case DepthCompare::Less:         return MTL::CompareFunctionLess;
+        case DepthCompare::Equal:        return MTL::CompareFunctionEqual;
+        case DepthCompare::LessEqual:    return MTL::CompareFunctionLessEqual;
+        case DepthCompare::Greater:      return MTL::CompareFunctionGreater;
+        case DepthCompare::NotEqual:     return MTL::CompareFunctionNotEqual;
+        case DepthCompare::GreaterEqual: return MTL::CompareFunctionGreaterEqual;
+        case DepthCompare::Always:       return MTL::CompareFunctionAlways;
+    }
+    return MTL::CompareFunctionAlways;
+}
+
+[[nodiscard]] inline MTL::CullMode to_mtl(CullMode c) noexcept {
+    switch (c) {
+        case CullMode::None:  return MTL::CullModeNone;
+        case CullMode::Front: return MTL::CullModeFront;
+        case CullMode::Back:  return MTL::CullModeBack;
+    }
+    return MTL::CullModeNone;
+}
+
+[[nodiscard]] inline MTL::Winding to_mtl(FrontFace f) noexcept {
+    return f == FrontFace::Clockwise ? MTL::WindingClockwise : MTL::WindingCounterClockwise;
+}
+
+[[nodiscard]] inline MTL::IndexType to_mtl(IndexType t) noexcept {
+    return t == IndexType::UInt16 ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32;
+}
+
 [[nodiscard]] inline MTL::VertexFormat to_mtl(VertexFormat f) noexcept {
     switch (f) {
         case VertexFormat::Float32:    return MTL::VertexFormatFloat;

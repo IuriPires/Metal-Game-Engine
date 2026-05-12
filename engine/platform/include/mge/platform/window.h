@@ -35,6 +35,10 @@ public:
     [[nodiscard]] std::uint32_t drawable_width() const noexcept;
     [[nodiscard]] std::uint32_t drawable_height() const noexcept;
 
+    // Returns true if the drawable size has changed since the last call to
+    // this function. Consumers (swapchain, camera aspect) re-sync on demand.
+    [[nodiscard]] bool consume_resize_event() noexcept;
+
     // Native layer pointer. On macOS this is a CAMetalLayer*. Pass to
     // mge::rhi::Device::create_swapchain.
     [[nodiscard]] void* native_layer() noexcept;

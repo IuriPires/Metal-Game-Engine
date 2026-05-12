@@ -57,9 +57,15 @@ public:
 
     void set_pipeline(RenderPipeline& pipeline);
     void set_vertex_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset = 0);
+    void set_fragment_buffer(Buffer& buffer, std::uint32_t slot, std::size_t offset = 0);
     void set_viewport(Viewport vp);
+
     void draw(std::uint32_t vertex_count, std::uint32_t instance_count = 1,
               std::uint32_t base_vertex = 0, std::uint32_t base_instance = 0);
+
+    void draw_indexed(std::uint32_t index_count, IndexType index_type, Buffer& index_buffer,
+                      std::size_t index_offset = 0, std::uint32_t instance_count = 1,
+                      std::int32_t base_vertex = 0, std::uint32_t base_instance = 0);
 
     // Explicit end - or just let the destructor do it.
     void end() noexcept;
@@ -69,7 +75,8 @@ public:
 private:
     friend class CommandBuffer;
     RenderEncoder(void* native) noexcept : native_(native) {}
-    void* native_ = nullptr;
+    void*             native_   = nullptr;
+    PrimitiveTopology topology_ = PrimitiveTopology::TriangleList;
 };
 
 }  // namespace mge::rhi

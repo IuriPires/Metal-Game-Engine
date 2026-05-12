@@ -1,8 +1,8 @@
 # examples/hello_metal
 #
-# M3 deliverable: opens a Cocoa window, builds an RHI Device + Queue +
-# Swapchain + RenderPipeline from inline MSL, draws an interpolated-color
-# triangle each frame. --headless smoke-tests the device path in CI.
+# M4 deliverable: a Lambert-lit rotating cube. Uses RHI + scene::Camera +
+# assets::make_cube + inline MSL shader. Resize-aware (depth texture
+# reallocates, camera aspect updates).
 
 add_executable(hello_metal
     main.cpp
@@ -12,6 +12,9 @@ target_link_libraries(hello_metal
     PRIVATE
         mge::platform
         mge::rhi_metal
+        mge::scene
+        mge::assets
+        mge::math
         mge::core
         mge_warnings
         mge_sanitizers

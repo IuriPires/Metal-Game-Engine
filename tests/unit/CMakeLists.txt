@@ -13,6 +13,8 @@ add_executable(mge_unit_tests
     test_log.cpp
     test_math.cpp
     test_memory.cpp
+    test_camera.cpp
+    test_primitives.cpp
 )
 
 target_link_libraries(mge_unit_tests
@@ -20,6 +22,8 @@ target_link_libraries(mge_unit_tests
         mge::core
         mge::math
         mge::memory
+        mge::scene
+        mge::assets
         doctest::doctest
         mge_warnings
         mge_sanitizers

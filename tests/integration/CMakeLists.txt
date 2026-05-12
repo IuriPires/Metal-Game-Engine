@@ -12,12 +12,16 @@ include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 add_executable(mge_integration_tests
     test_clear_rhi.cpp
     test_triangle_offscreen.cpp
+    test_lambert_cube.cpp
 )
 
 target_link_libraries(mge_integration_tests
     PRIVATE
         mge::rhi_metal
         mge::core
+        mge::scene
+        mge::assets
+        mge::math
         doctest::doctest
         mge_warnings
         mge_sanitizers

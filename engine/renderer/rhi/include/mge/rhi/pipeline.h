@@ -34,9 +34,14 @@ struct ColorTargetState {
 };
 
 struct DepthState {
-    PixelFormat format        = PixelFormat::Undefined;
-    bool        write_enabled = false;
-    // Depth compare: M5+
+    PixelFormat  format        = PixelFormat::Undefined;
+    bool         write_enabled = false;
+    DepthCompare compare       = DepthCompare::Less;
+};
+
+struct RasterizerState {
+    CullMode  cull_mode  = CullMode::Back;
+    FrontFace front_face = FrontFace::CounterClockwise;
 };
 
 struct RenderPipelineDesc {
@@ -49,6 +54,7 @@ struct RenderPipelineDesc {
     std::array<ColorTargetState, 8> color_targets{};
     std::uint32_t     num_color_targets = 1;
     DepthState        depth{};
+    RasterizerState   rasterizer{};
     std::string       label;
 };
 
@@ -63,16 +69,25 @@ public:
     [[nodiscard]] void*       native() noexcept { return native_; }
     [[nodiscard]] const void* native() const noexcept { return native_; }
 
-    // Cached topology - render encoders need it at draw time, separate from PSO.
+    // Optional Metal MTLDepthStencilState (nullptr if pipeline has no depth).
+    [[nodiscard]] void* native_depth_stencil() noexcept { return native_depth_; }
+
     [[nodiscard]] PrimitiveTopology topology() const noexcept { return topology_; }
+    [[nodiscard]] CullMode          cull_mode() const noexcept { return cull_; }
+    [[nodiscard]] FrontFace         front_face() const noexcept { return winding_; }
 
 private:
     friend class Device;
-    RenderPipeline(void* native, PrimitiveTopology t, std::string label) noexcept
-        : native_(native), topology_(t), label_(std::move(label)) {}
+    RenderPipeline(void* native, void* depth, PrimitiveTopology t, CullMode c,
+                   FrontFace w, std::string label) noexcept
+        : native_(native), native_depth_(depth), topology_(t), cull_(c), winding_(w),
+          label_(std::move(label)) {}
 
-    void*             native_   = nullptr;
-    PrimitiveTopology topology_ = PrimitiveTopology::TriangleList;
+    void*             native_       = nullptr;
+    void*             native_depth_ = nullptr;
+    PrimitiveTopology topology_     = PrimitiveTopology::TriangleList;
+    CullMode          cull_         = CullMode::Back;
+    FrontFace         winding_      = FrontFace::CounterClockwise;
     std::string       label_;
 };
 

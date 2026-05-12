@@ -42,6 +42,28 @@ enum class PrimitiveTopology : std::uint8_t {
     TriangleStrip,
 };
 
+enum class DepthCompare : std::uint8_t {
+    Never = 0,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+};
+
+enum class CullMode : std::uint8_t {
+    None = 0,
+    Front,
+    Back,
+};
+
+enum class FrontFace : std::uint8_t {
+    Clockwise = 0,
+    CounterClockwise,
+};
+
 enum class IndexType : std::uint8_t {
     UInt16 = 0,
     UInt32,

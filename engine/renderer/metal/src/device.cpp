@@ -207,8 +207,21 @@ std::unique_ptr<RenderPipeline> Device::create_render_pipeline(const RenderPipel
         return nullptr;
     }
 
-    return std::unique_ptr<RenderPipeline>(new RenderPipeline(pso, desc.topology,
-                                                              desc.label));
+    // Depth-stencil state is a separate Metal object - build it from the desc
+    // and stash alongside the pipeline so the encoder can bind both when the
+    // pipeline is set.
+    MTL::DepthStencilState* dss = nullptr;
+    if (desc.depth.format != PixelFormat::Undefined) {
+        MTL::DepthStencilDescriptor* dsd = MTL::DepthStencilDescriptor::alloc()->init();
+        dsd->setDepthCompareFunction(mb::to_mtl(desc.depth.compare));
+        dsd->setDepthWriteEnabled(desc.depth.write_enabled);
+        dss = dev->newDepthStencilState(dsd);
+        dsd->release();
+    }
+
+    return std::unique_ptr<RenderPipeline>(new RenderPipeline(
+        pso, dss, desc.topology, desc.rasterizer.cull_mode,
+        desc.rasterizer.front_face, desc.label));
 }
 
 std::unique_ptr<Swapchain> Device::create_swapchain(void* native_layer, PixelFormat fmt) {

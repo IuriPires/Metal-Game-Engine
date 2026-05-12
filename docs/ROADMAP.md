@@ -36,12 +36,16 @@ Living document. Tick boxes as milestones land. Each milestone closes with: gree
   - [—] Sampler / Fence (deferred — Sampler lands at M4, Fence at M10)
   - [—] Mock backend for unit tests (deferred to M5 when frame graph needs it)
   - [—] Pixel-perfect golden image (deferred to M9, needs perceptual diff harness)
-- [ ] **M4 — Mesh + camera + basic forward**
-  - [ ] cgltf glTF loader
-  - [ ] MeshBuffer (vertex, index, attribute layout)
-  - [ ] Perspective camera + FPS controller
-  - [ ] Basic Lambert forward shader
-  - [ ] Golden image of a cube/sphere
+- [x] **M4 — Mesh + camera + basic forward**
+  - [x] RHI v1.1: depth state on pipeline, depth attachment in pass, `set_fragment_buffer`, `draw_indexed`, CullMode + FrontFace, DepthCompare. Fixed P1-RHI-DRAW-001 (encoder tracks topology).
+  - [x] `engine/scene/camera.h` — perspective camera with cached view/projection, RH zero-to-one depth (Metal-friendly), aspect resize.
+  - [x] `engine/assets/primitives.h` — procedural cube (24 verts / 36 indices, axis-aligned normals, CCW winding outward).
+  - [x] Lambert forward MSL shader (vertex + fragment via uniform buffer), inline. Rotating cube demo at ~110 fps M1 Pro.
+  - [x] Window resize support: `consume_resize_event()`, depth texture re-allocates, camera aspect updates. Closes P1-WINDOW-001.
+  - [x] Integration test: Lambert cube into 128×128 offscreen, asserts non-clear center + at least one clear corner.
+  - [—] cgltf glTF loader (deferred to M5 — procedural primitives cover M4 demo)
+  - [—] FPS controller (deferred — needs input system, lands at M5 with frame graph)
+  - [—] Pixel-perfect golden image (deferred to M9 with perceptual diff)
 - [ ] **M5 — Frame graph v1**
   - [ ] Pass declaration API
   - [ ] Virtual resources + lifetime analysis
