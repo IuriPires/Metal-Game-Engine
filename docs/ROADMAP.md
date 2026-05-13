@@ -286,9 +286,15 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [x] **`EngineState::{active_model, view_matrix, projection_matrix}`** — nullable float[16] pointers in column-major. When `active_model != nullptr`, `Editor::render()` calls `ImGuizmo::Manipulate` between `draw_chrome` and `ImGui::Render`, drawing on `GetBackgroundDrawList()` so the handles sit above the rasterised scene but below the panels.
   - [x] **Demo**: on a Sphere selection, builds a column-major translation matrix from `sphere.position`, points `EngineState::active_model` at it. After `fg.execute()`, decomposes the translation column back into `sphere.position` if it changed. Camera input is gated on `!editor->gizmo_active()` so orbit doesn't fight the drag; picking also gated to avoid the gizmo-handle click reselecting.
   - [x] **103/103 tests green**.
-  - [—] **Cubes / tube / glTF mesh manipulation** — M28b. Needs a real Transform component layer; today the demo holds positions in disparate structs.
   - [—] **Rotation + scale for spheres** — N/A (spheres are radially symmetric). Implemented at the gizmo level; nothing to write back for spheres.
   - [—] **Inspector Position fields (typed numeric input)** — M28b polish. Today the gizmo + Outliner suffice for transform editing.
+- [x] **M28b — Gizmo manipulation for cubes / tube / glTF**
+  - [x] **Hoisted transforms** — `tube_xform` (Mat4, was an inline `translation(0, 0, 3.6)` in two places) and `gltf_model` (already a Mat4 from M25c's fit-to-box, now mutable across frames) live at `run_windowed` scope. Both feed the InstanceData fill AND the dynamic-TLAS rebuild path, so RT shadows + reflections track the gizmo edits.
+  - [x] **Per-kind gizmo wiring** — Sphere / CubeField pack a translation matrix from their position field, gizmo edits, decompose back. SkinnedTube / Scene load the live Mat4, gizmo edits in place, the full matrix (including rotation + scale) writes back.
+  - [x] **Picking AABBs use live transforms** — tube + glTF AABBs are derived from `tube_xform.cols[3]` and `gltf_model.cols[3]` so the picker stays accurate as the user moves them. Cube AABBs come from `cube_world_aabb(cubes_proto[i])` which already tracks `cube.center` (made mutable by dropping `const` on the vector).
+  - [x] **Demo smoke + 103/103 tests green.**
+  - [—] **Per-cube vs whole-field selection UI** — picking a cube selects that individual instance (`SelectionKind::CubeField` + `index`); the Outliner still shows "Cube Field" as a single root. M28c could split per-cube outliner rows.
+  - [—] **Inspector Position fields (numeric input)** — M28c polish.
 - [ ] M25d — Normal + MR maps on glTF assets
 - [ ] M26b — NSEvent direct capture + ortho cameras + viewport selector
 - [ ] ECS proper (archetype storage)

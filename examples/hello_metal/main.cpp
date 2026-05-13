@@ -2437,7 +2437,9 @@ int run_windowed(Args a) {
     wd.height = a.height;
     Window window(wd);
 
-    const auto cubes_proto = build_cube_field(a.cube_side);
+    // M28b — drop the `const` on the cube field so the gizmo can mutate
+    // individual cube centres in place. Nothing else writes to it.
+    auto cubes_proto = build_cube_field(a.cube_side);
     // Slots: 5 spheres + ground + tube + gltf cube + N cubes + slack
     const std::size_t instance_cap = k_spheres.size() + 3 + cubes_proto.size() + 8;
     std::printf("[hello_metal] cube field: %ux%u -> %zu cubes (after empty-center skip)\n",
@@ -2456,6 +2458,13 @@ int run_windowed(Args a) {
             gltf_scene.reset();
         }
     }
+
+    // M28b — Hoist transforms that the gizmo will edit. The tube ran with
+    // a literal `translation(0, 0, 3.6)` inline in the render and TLAS
+    // paths; promoting it to a writable Mat4 lets the gizmo modify it
+    // without touching the inner code paths.
+    mge::math::Mat4 tube_xform = mge::math::translation(
+        mge::math::Vec3{0.0f, 0.0f, 3.6f});
 
     // M25c — derive a fit-to-box transform for the loaded mesh so any scale
     // of glTF reads at roughly the same size as the M25b procedural unit cube.
@@ -2691,25 +2700,36 @@ int run_windowed(Args a) {
                         static_cast<std::uint32_t>(SK::Sphere), i,
                     });
                 }
-                // Skinned tube — wraps the demo's tube transform translation.
+                // Skinned tube — bounds wrap the local tube cylinder
+                // translated by the current tube_xform's column-3 origin.
+                // Approximate AABB (ignores rotation); good enough for the
+                // picker which only needs to bracket the visible silhouette.
                 {
-                    const float h = r->tube_height;
+                    const float h  = r->tube_height;
                     const float rr = 0.20f;
+                    const float tx = tube_xform.cols[3].x;
+                    const float ty = tube_xform.cols[3].y;
+                    const float tz = tube_xform.cols[3].z;
                     pickables.push_back({
                         mge::math::Aabb::from_points(
-                            { 0.0f - rr, 0.0f,     3.6f - rr},
-                            { 0.0f + rr, h,         3.6f + rr}),
+                            {tx - rr, ty,       tz - rr},
+                            {tx + rr, ty + h,   tz + rr}),
                         static_cast<std::uint32_t>(SK::SkinnedTube), 0,
                     });
                 }
-                // glTF mesh — use the fit-to-box transform's translation +
-                // the 1.5 m target box.
+                // glTF mesh — bracket the current gltf_model's translation
+                // with the M25c 1.5 m fit-to-box target. Rotation/scale
+                // applied via the gizmo aren't reflected in the AABB; the
+                // picker still hits if the cursor is over the mesh centre.
                 {
-                    constexpr float k = 0.75f;
+                    constexpr float k = 0.85f;
+                    const float gx = gltf_model.cols[3].x;
+                    const float gy = gltf_model.cols[3].y;
+                    const float gz = gltf_model.cols[3].z;
                     pickables.push_back({
                         mge::math::Aabb::from_points(
-                            {1.2f - k, 2.5f - k, -1.5f - k},
-                            {1.2f + k, 2.5f + k, -1.5f + k}),
+                            {gx - k, gy - k, gz - k},
+                            {gx + k, gy + k, gz + k}),
                         static_cast<std::uint32_t>(SK::Scene), 0,
                     });
                 }
@@ -2855,13 +2875,12 @@ int run_windowed(Args a) {
             instances[k_spheres.size()] = inst;
         }
         // Tube (skinned) at [tube_slot]: stand in front of the camera, slightly
-        // to the right of the sphere row.
+        // to the right of the sphere row. M28b hoists this matrix to
+        // run_windowed scope so the gizmo can edit it.
         {
             InstanceData inst{};
-            const mge::math::Mat4 m =
-                mge::math::translation(mge::math::Vec3{0.0f, 0.0f, 3.6f});
-            inst.model        = m;
-            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(m));
+            inst.model        = tube_xform;
+            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(tube_xform));
             inst.albedo_ao[0] = 0.18f; inst.albedo_ao[1] = 0.55f;
             inst.albedo_ao[2] = 0.70f; inst.albedo_ao[3] = 1.0f;
             inst.mr[0]        = 0.0f;  inst.mr[1] = 0.35f;
@@ -3619,25 +3638,53 @@ int run_windowed(Args a) {
             es.spheres      = sphere_views.data();
             es.sphere_count = static_cast<std::uint32_t>(sphere_views.size());
 
-            // M28a — wire the transform gizmo against the active selection.
-            // Only Sphere is supported in this slice; cubes/tube/glTF land
-            // in M28b alongside a real Transform component layer. Camera
-            // matrices are cached so editor->render() inside fg.execute
-            // sees them as stable pointers.
+            // M28a/M28b — wire the transform gizmo against the active
+            // selection. Each kind packs its source data into the column-
+            // major gizmo_model below; after fg.execute() returns we
+            // decompose the (possibly edited) matrix and write back. Tube
+            // and glTF carry a full 4x4, so the gizmo's rotation + scale
+            // also persist for those kinds. Sphere + Cube only have a
+            // position field, so rotation / scale silently drop.
             const auto& sel = editor->selection();
+            gizmo_armed = false;
+            auto load_identity = [](std::array<float, 16>& m) {
+                m.fill(0.0f);
+                m[0] = m[5] = m[10] = m[15] = 1.0f;
+            };
+            auto load_translation = [&](std::array<float, 16>& m,
+                                          float x, float y, float z) {
+                load_identity(m);
+                m[12] = x; m[13] = y; m[14] = z;
+            };
+            auto load_mat4 = [](std::array<float, 16>& dst,
+                                  const mge::math::Mat4& src) {
+                std::memcpy(dst.data(), &src, sizeof(float) * 16);
+            };
+
             if (sel.kind == mge::editor::SelectionKind::Sphere
                 && sel.index < k_spheres.size()) {
                 gizmo_sphere_idx = sel.index;
                 gizmo_armed      = true;
-                // Column-major translation matrix.
-                gizmo_model.fill(0.0f);
-                gizmo_model[0]  = 1.0f;
-                gizmo_model[5]  = 1.0f;
-                gizmo_model[10] = 1.0f;
-                gizmo_model[12] = k_spheres[gizmo_sphere_idx].position.x;
-                gizmo_model[13] = k_spheres[gizmo_sphere_idx].position.y;
-                gizmo_model[14] = k_spheres[gizmo_sphere_idx].position.z;
-                gizmo_model[15] = 1.0f;
+                const auto& s = k_spheres[gizmo_sphere_idx];
+                load_translation(gizmo_model, s.position.x, s.position.y, s.position.z);
+            } else if (sel.kind == mge::editor::SelectionKind::CubeField
+                       && sel.index < cubes_proto.size()) {
+                gizmo_armed       = true;
+                gizmo_sphere_idx  = sel.index;  // re-used as cube index
+                const auto& c = cubes_proto[sel.index];
+                load_translation(gizmo_model, c.center.x, c.center.y, c.center.z);
+            } else if (sel.kind == mge::editor::SelectionKind::SkinnedTube) {
+                gizmo_armed       = true;
+                gizmo_sphere_idx  = 0;
+                load_mat4(gizmo_model, tube_xform);
+            } else if (sel.kind == mge::editor::SelectionKind::Scene) {
+                // Scene is the catch-all the picker uses for the glTF
+                // mesh today (until per-mesh selection kinds land).
+                gizmo_armed       = true;
+                gizmo_sphere_idx  = 0;
+                load_mat4(gizmo_model, gltf_model);
+            }
+            if (gizmo_armed) {
                 es.active_model       = gizmo_model.data();
                 es.view_matrix        = reinterpret_cast<const float*>(&cached_view);
                 es.projection_matrix  = reinterpret_cast<const float*>(&cached_proj);
@@ -3668,17 +3715,29 @@ int run_windowed(Args a) {
             fg.execute(*r->queue, &frame_drawable);
         }
 
-        // M28a — write the gizmo's edited translation back into the source
-        // sphere data. ImGuizmo mutates gizmo_model in place during
-        // editor->render(); the matrix is column-major, so the translation
-        // sits in columns 12..14.
-        if (gizmo_armed) {
-            auto& s = k_spheres[gizmo_sphere_idx];
-            const float nx = gizmo_model[12];
-            const float ny = gizmo_model[13];
-            const float nz = gizmo_model[14];
-            if (nx != s.position.x || ny != s.position.y || nz != s.position.z) {
-                s.position = mge::math::Vec3{nx, ny, nz};
+        // M28a/M28b — write the gizmo's edited matrix back into the source
+        // data. ImGuizmo mutates gizmo_model in place during editor->render().
+        // Spheres + cubes only store a position, so we read the column-3
+        // translation. Tube + glTF store the full Mat4 and accept rotation
+        // / scale persistently.
+        if (gizmo_armed && editor) {
+            const auto& sel_now = editor->selection();
+            if (sel_now.kind == mge::editor::SelectionKind::Sphere
+                && sel_now.index < k_spheres.size()) {
+                auto& s = k_spheres[sel_now.index];
+                s.position = mge::math::Vec3{gizmo_model[12], gizmo_model[13],
+                                              gizmo_model[14]};
+            } else if (sel_now.kind == mge::editor::SelectionKind::CubeField
+                       && sel_now.index < cubes_proto.size()) {
+                auto& c = cubes_proto[sel_now.index];
+                c.center = mge::math::Vec3{gizmo_model[12], gizmo_model[13],
+                                            gizmo_model[14]};
+            } else if (sel_now.kind == mge::editor::SelectionKind::SkinnedTube) {
+                std::memcpy(&tube_xform, gizmo_model.data(),
+                             sizeof(float) * 16);
+            } else if (sel_now.kind == mge::editor::SelectionKind::Scene) {
+                std::memcpy(&gltf_model, gizmo_model.data(),
+                             sizeof(float) * 16);
             }
         }
 
@@ -3688,8 +3747,8 @@ int run_windowed(Args a) {
         // accept the ~ms cost for now; refit-in-place lands in M24.b.
         if (rt_active) {
             MGE_PROFILE_ZONE("tlas_rebuild");
-            const mge::math::Mat4 tube_xform =
-                mge::math::translation(mge::math::Vec3{0.0f, 0.0f, 3.6f});
+            // M28b — pass the live tube_xform so the dynamic BLAS lines up
+            // with whatever the gizmo edited.
             r->rebuild_dynamic_tlas(
                 std::span<const Sphere>(k_spheres.data(), k_spheres.size()),
                 std::span<const CubeProto>(cubes_proto.data(), cubes_proto.size()),
