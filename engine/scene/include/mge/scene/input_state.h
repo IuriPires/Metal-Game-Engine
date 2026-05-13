@@ -25,6 +25,8 @@ enum class Key : std::uint8_t {
          // moved its camera-mode toggle to F1.
     F1,  // camera-mode toggle in the demo
     F2,
+    R,   // gizmo mode: rotate (M28a)
+    T,   // reserved (alt gizmo binding / "tool")
     Esc,
     Space,
     LeftBracket, RightBracket,

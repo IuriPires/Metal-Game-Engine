@@ -168,6 +168,37 @@ if(APPLE AND NOT TARGET imgui::imgui)
 endif()
 
 # -----------------------------------------------------------------------------
+# ImGuizmo — transform gizmo widget (translate/rotate/scale) for Dear ImGui
+#   Consumed by: M28a (transform gizmo), ADR-0016
+# -----------------------------------------------------------------------------
+FetchContent_Declare(imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG        ba662b119d64f9ab700bb2cd7b2781f9044f5565  # 2024-03-19, stable
+    GIT_SHALLOW    FALSE
+)
+FetchContent_MakeAvailable(imguizmo)
+
+if(APPLE AND NOT TARGET imguizmo::imguizmo)
+    add_library(imguizmo STATIC
+        ${imguizmo_SOURCE_DIR}/ImGuizmo.cpp
+    )
+    target_include_directories(imguizmo SYSTEM PUBLIC
+        ${imguizmo_SOURCE_DIR}
+    )
+    target_link_libraries(imguizmo PUBLIC imgui::imgui)
+    target_compile_features(imguizmo PUBLIC cxx_std_17)
+    target_compile_options(imguizmo PRIVATE
+        -Wno-deprecated-declarations
+        -Wno-old-style-cast
+        -Wno-conversion
+        -Wno-shadow
+        -Wno-unused-parameter
+        -Wno-cast-align
+    )
+    add_library(imguizmo::imguizmo ALIAS imguizmo)
+endif()
+
+# -----------------------------------------------------------------------------
 # Aggregate interface for tests
 # -----------------------------------------------------------------------------
 add_library(mge_thirdparty INTERFACE)

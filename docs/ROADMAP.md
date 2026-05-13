@@ -279,7 +279,16 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [—] **Selection outline overlay in the viewport** — M27b. Today the user sees the selection via Outliner highlight + Inspector contents; an extrusion-outline pass (re-draw the selected mesh at 1.05× scale with front-face cull in amber) lands in a follow-up.
   - [—] **Marquee / box selection** — Phase 3 polish.
 - [ ] M27b — Selection outline overlay in the viewport
-- [ ] M28 — Transform gizmo (translate/rotate/scale via ImGuizmo) + Inspector transform fields (ADR-0016)
+- [x] **M28a — Transform gizmo (translate) via ImGuizmo, sphere-only**
+  - [x] **ADR-0016** records the ImGuizmo dependency (single-cpp, ~5 kLOC, MIT) + the alternatives (hand-rolled gizmo, defer entirely). FetchContent pin `ba662b1` (2024-03-19).
+  - [x] **`third_party/CMakeLists.txt`** declares `imguizmo::imguizmo` STATIC target built against `imgui::imgui`.
+  - [x] **`Editor::GizmoOp`** enum (Translate / Rotate / Scale) + `gizmo_op()` / `set_gizmo_op()` accessors + `gizmo_active()` flag (true while ImGuizmo's `IsUsing()` is true). The demo sets the op via W / E / R hotkeys.
+  - [x] **`EngineState::{active_model, view_matrix, projection_matrix}`** — nullable float[16] pointers in column-major. When `active_model != nullptr`, `Editor::render()` calls `ImGuizmo::Manipulate` between `draw_chrome` and `ImGui::Render`, drawing on `GetBackgroundDrawList()` so the handles sit above the rasterised scene but below the panels.
+  - [x] **Demo**: on a Sphere selection, builds a column-major translation matrix from `sphere.position`, points `EngineState::active_model` at it. After `fg.execute()`, decomposes the translation column back into `sphere.position` if it changed. Camera input is gated on `!editor->gizmo_active()` so orbit doesn't fight the drag; picking also gated to avoid the gizmo-handle click reselecting.
+  - [x] **103/103 tests green**.
+  - [—] **Cubes / tube / glTF mesh manipulation** — M28b. Needs a real Transform component layer; today the demo holds positions in disparate structs.
+  - [—] **Rotation + scale for spheres** — N/A (spheres are radially symmetric). Implemented at the gizmo level; nothing to write back for spheres.
+  - [—] **Inspector Position fields (typed numeric input)** — M28b polish. Today the gizmo + Outliner suffice for transform editing.
 - [ ] M25d — Normal + MR maps on glTF assets
 - [ ] M26b — NSEvent direct capture + ortho cameras + viewport selector
 - [ ] ECS proper (archetype storage)

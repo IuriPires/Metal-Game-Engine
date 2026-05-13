@@ -5,6 +5,7 @@
 #include "theme.h"
 
 #include "imgui.h"
+#include "ImGuizmo.h"
 
 #include <cstring>
 
@@ -127,10 +128,36 @@ void Editor::render(const EngineState& state, rhi::RenderEncoder& enc,
                          color_texture_native,
                          /*depth_texture=*/nullptr);
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
     bool hovered = false;
     draw_chrome(state, selection_, &hovered);
     viewport_hovered_ = hovered;
-    populate_input_state(input_state_, viewport_hovered_);
+
+    // M28a — Gizmo manipulation. Hosts the ImGuizmo widget on top of the
+    // viewport when the demo supplies an active model + view + projection.
+    // Drawn on the main viewport's draw list so it overlays the rasterised
+    // scene without being clipped by any panel child.
+    gizmo_active_ = false;
+    if (state.active_model != nullptr
+        && state.view_matrix != nullptr
+        && state.projection_matrix != nullptr) {
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGuizmo::SetRect(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y);
+
+        ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+        switch (gizmo_op_) {
+            case GizmoOp::Translate: op = ImGuizmo::TRANSLATE; break;
+            case GizmoOp::Rotate:    op = ImGuizmo::ROTATE;    break;
+            case GizmoOp::Scale:     op = ImGuizmo::SCALE;     break;
+        }
+        ImGuizmo::Manipulate(state.view_matrix, state.projection_matrix,
+                              op, ImGuizmo::WORLD, state.active_model);
+        gizmo_active_ = ImGuizmo::IsUsing();
+    }
+
+    populate_input_state(input_state_, viewport_hovered_ && !gizmo_active_);
     ImGui::Render();
     platform::render_into_encoder(command_buffer_native, enc.native());
 }

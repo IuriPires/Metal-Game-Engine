@@ -110,6 +110,16 @@ struct EngineState {
     // Static metadata for the Outliner.
     std::uint32_t tube_bone_count = 0;
 
+    // M28a — active transform for the gizmo. `active_model` is a pointer
+    // to a 16-float column-major model matrix; nullable. When non-null the
+    // editor draws an ImGuizmo manipulator on top of the viewport that
+    // mutates the matrix in place. `view_matrix` + `projection_matrix`
+    // must point at 16-float arrays in the same camera frame the scene
+    // was rendered with (so the gizmo lines up pixel-perfect).
+    float* active_model      = nullptr;
+    const float* view_matrix       = nullptr;
+    const float* projection_matrix = nullptr;
+
     // M21 — mutable lighting cvars. Render Settings sliders write through
     // these pointers. Slider ranges live in the editor (chrome.cpp).
     float* sun_yaw            = nullptr;
@@ -166,6 +176,18 @@ public:
     [[nodiscard]] Selection& selection() noexcept { return selection_; }
     [[nodiscard]] const Selection& selection() const noexcept { return selection_; }
 
+    // M28a — current gizmo operation. The demo cycles this with W/E/R.
+    // Mirrors ImGuizmo::OPERATION values but kept as a plain enum so the
+    // header doesn't leak the ImGuizmo include.
+    enum class GizmoOp : std::uint8_t { Translate, Rotate, Scale };
+    [[nodiscard]] GizmoOp gizmo_op() const noexcept { return gizmo_op_; }
+    void set_gizmo_op(GizmoOp op) noexcept { gizmo_op_ = op; }
+
+    // True iff the gizmo widget is currently capturing the mouse (user is
+    // dragging a handle). Demo gates camera input on `!gizmo_active()`
+    // so orbit doesn't kick in mid-drag.
+    [[nodiscard]] bool gizmo_active() const noexcept { return gizmo_active_; }
+
     // M26a — true iff the mouse cursor was over the central 3D viewport
     // child during the most recent `render()` call (i.e. not over any
     // editor panel). The demo gates camera input on this so panel clicks
@@ -188,6 +210,8 @@ private:
     Editor() = default;
     bool             visible_           = true;
     bool             viewport_hovered_  = true;
+    bool             gizmo_active_      = false;
+    GizmoOp          gizmo_op_          = GizmoOp::Translate;
     Selection        selection_{};
     void*            native_window_     = nullptr;
     void*            metal_device_      = nullptr;

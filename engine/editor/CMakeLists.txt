@@ -28,6 +28,7 @@ target_compile_features(mge_editor PUBLIC cxx_std_20)
 target_link_libraries(mge_editor
     PUBLIC
         imgui::imgui
+        imguizmo::imguizmo
         mge::rhi
         mge::core
         mge::profile

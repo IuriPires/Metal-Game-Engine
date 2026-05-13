@@ -2627,6 +2627,20 @@ int run_windowed(Args a) {
             // but ImGui's NavEnableKeyboard claims ownership of Tab once a
             // widget gains focus, silently filtering it from IsKeyDown for
             // non-owners; F1 has no such conflict.
+            // M28a — gizmo mode hotkeys (Maya/Unity convention).
+            // W collides with Fly-WASD but is_pressed fires only on rising
+            // edge, so holding W in Fly mode toggles the gizmo mode once
+            // and continues to drive forward motion.
+            if (editor) {
+                if (in_state.is_pressed(mge::scene::Key::W)) {
+                    editor->set_gizmo_op(mge::editor::Editor::GizmoOp::Translate);
+                } else if (in_state.is_pressed(mge::scene::Key::E)) {
+                    editor->set_gizmo_op(mge::editor::Editor::GizmoOp::Rotate);
+                } else if (in_state.is_pressed(mge::scene::Key::R)) {
+                    editor->set_gizmo_op(mge::editor::Editor::GizmoOp::Scale);
+                }
+            }
+
             if (in_state.is_pressed(mge::scene::Key::F1)) {
                 cam_mode = (cam_mode == CamMode::Orbit) ? CamMode::Fly
                                                          : CamMode::Orbit;
@@ -2642,10 +2656,15 @@ int run_windowed(Args a) {
                 std::fflush(stdout);
             }
             const float ctrl_dt = 1.0f / std::max(1.0f, a.target_fps);
-            if (cam_mode == CamMode::Orbit) {
-                orbit.update(camera, in_state, ctrl_dt);
-            } else {
-                fly.update(camera, in_state, ctrl_dt);
+            // Don't drive the camera while the gizmo is dragging — the
+            // populate_input_state path already clears the hover flag in
+            // that case but a stray scroll-wheel event still gets through.
+            if (!editor->gizmo_active()) {
+                if (cam_mode == CamMode::Orbit) {
+                    orbit.update(camera, in_state, ctrl_dt);
+                } else {
+                    fly.update(camera, in_state, ctrl_dt);
+                }
             }
 
             // M27 — LMB-press inside the viewport (no modifiers) picks the
@@ -2655,6 +2674,7 @@ int run_windowed(Args a) {
             const bool plain_click =
                 in_state.is_pressed(mge::scene::Button::Left)
                 && in_state.viewport_hovered
+                && !editor->gizmo_active()
                 && !in_state.mods.alt && !in_state.mods.shift
                 && !in_state.mods.ctrl && !in_state.mods.super;
             if (plain_click) {
@@ -3474,6 +3494,16 @@ int run_windowed(Args a) {
         // both at render_fn scope keeps them alive through the FG submit.
         mge::editor::EngineState                editor_state{};
         std::array<mge::editor::SphereView, 5>  sphere_views{};
+        // M28a — gizmo state. The matrix lives on the stack here; if a
+        // sphere is selected we point editor_state.active_model at it,
+        // ImGuizmo writes into it during editor->render(), and below
+        // (after fg.execute) we decompose the translation column back
+        // into the source sphere data.
+        std::array<float, 16> gizmo_model{};
+        mge::math::Mat4       cached_view = camera.view();
+        mge::math::Mat4       cached_proj = camera.projection();
+        bool                  gizmo_armed = false;
+        std::uint32_t         gizmo_sphere_idx = 0;
         if (editor && editor->visible()) {
             const std::uint32_t fw_now = fw;
             const std::uint32_t fh_now = fh;
@@ -3589,6 +3619,30 @@ int run_windowed(Args a) {
             es.spheres      = sphere_views.data();
             es.sphere_count = static_cast<std::uint32_t>(sphere_views.size());
 
+            // M28a — wire the transform gizmo against the active selection.
+            // Only Sphere is supported in this slice; cubes/tube/glTF land
+            // in M28b alongside a real Transform component layer. Camera
+            // matrices are cached so editor->render() inside fg.execute
+            // sees them as stable pointers.
+            const auto& sel = editor->selection();
+            if (sel.kind == mge::editor::SelectionKind::Sphere
+                && sel.index < k_spheres.size()) {
+                gizmo_sphere_idx = sel.index;
+                gizmo_armed      = true;
+                // Column-major translation matrix.
+                gizmo_model.fill(0.0f);
+                gizmo_model[0]  = 1.0f;
+                gizmo_model[5]  = 1.0f;
+                gizmo_model[10] = 1.0f;
+                gizmo_model[12] = k_spheres[gizmo_sphere_idx].position.x;
+                gizmo_model[13] = k_spheres[gizmo_sphere_idx].position.y;
+                gizmo_model[14] = k_spheres[gizmo_sphere_idx].position.z;
+                gizmo_model[15] = 1.0f;
+                es.active_model       = gizmo_model.data();
+                es.view_matrix        = reinterpret_cast<const float*>(&cached_view);
+                es.projection_matrix  = reinterpret_cast<const float*>(&cached_proj);
+            }
+
             fg.add_pass("editor",
                 [&](PassBuilder& pb) {
                     pb.write_color(bb, LoadAction::Load, 0, 0, 0, 1);
@@ -3612,6 +3666,20 @@ int run_windowed(Args a) {
         {
             MGE_PROFILE_ZONE("fg_execute");
             fg.execute(*r->queue, &frame_drawable);
+        }
+
+        // M28a — write the gizmo's edited translation back into the source
+        // sphere data. ImGuizmo mutates gizmo_model in place during
+        // editor->render(); the matrix is column-major, so the translation
+        // sits in columns 12..14.
+        if (gizmo_armed) {
+            auto& s = k_spheres[gizmo_sphere_idx];
+            const float nx = gizmo_model[12];
+            const float ny = gizmo_model[13];
+            const float nz = gizmo_model[14];
+            if (nx != s.position.x || ny != s.position.y || nz != s.position.z) {
+                s.position = mge::math::Vec3{nx, ny, nz};
+            }
         }
 
         // M24 — rebuild the dynamic TLAS for next frame. Runs after the
