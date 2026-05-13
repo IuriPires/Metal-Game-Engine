@@ -38,11 +38,14 @@
 
 #include "font8x8.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -179,6 +182,7 @@ struct Args {
     bool          no_rt      = false;  // disable RT shadows + reflections (fall back to CSM)
     int           force_lod  = -1;     // -1 = auto (distance), 0/1/2 = forced level
     bool          editor     = false;  // M18: ImGui editor chrome on top of the demo
+    std::string   gltf_path;            // M25c: --gltf <path> swaps the proc cube for a real glTF
 };
 
 Args parse_args(int argc, char** argv) {
@@ -218,6 +222,8 @@ Args parse_args(int argc, char** argv) {
                 static_cast<std::size_t>(a.force_lod) >= kSphereLodCount) {
                 a.force_lod = -1;
             }
+        } else if (s == "--gltf" && i + 1 < argc) {
+            a.gltf_path = argv[++i];
         }
     }
     return a;
@@ -1485,7 +1491,8 @@ struct DeferredRenderer {
     std::unique_ptr<mge::rhi::Sampler> shadow_sampler;
 
     static std::unique_ptr<DeferredRenderer> create(mge::rhi::PixelFormat backbuffer_fmt,
-                                                     std::size_t instance_cap) {
+                                                     std::size_t instance_cap,
+                                                     const mge::assets::GltfScene* gltf = nullptr) {
         using namespace mge::rhi;
         auto r = std::make_unique<DeferredRenderer>();
         r->device = Device::create();
@@ -1623,51 +1630,92 @@ struct DeferredRenderer {
             r->tube_joint_buf = r->device->create_buffer(jb);
         }
 
-        // M25b — procedural textured cube (GltfVertex layout, base-color
-        // checker uploaded via Texture::upload_region).
+        // M25b/M25c — textured PBR mesh in GltfVertex layout. By default we
+        // ship the M25b procedural cube + checker so the demo runs without
+        // any on-disk assets. With a `--gltf <path>`-provided GltfScene we
+        // swap in the first triangulated mesh and (when present) its
+        // material's base-color texture, both routed through the same
+        // `gltf_gbuffer_pso` and `Texture::upload_region` upload path.
         {
-            const auto cube_gltf = mge::assets::make_textured_cube();
-            r->gltf_index_count  = static_cast<std::uint32_t>(cube_gltf.indices.size());
-            r->gltf_vbuf = upload(cube_gltf.vertices.data(),
-                                   cube_gltf.vertices.size() *
-                                       sizeof(mge::assets::GltfVertex),
-                                   BufferUsage::Vertex, "gltf.cube.vbuf");
-            r->gltf_ibuf = upload(cube_gltf.indices.data(),
-                                   cube_gltf.indices.size() *
-                                       sizeof(std::uint32_t),
-                                   BufferUsage::Index, "gltf.cube.ibuf");
-
-            // 64×64 RGBA8 checker: 8×8 cells, alternating warm-orange / dark.
-            constexpr std::uint32_t kTexW = 64;
-            constexpr std::uint32_t kTexH = 64;
-            constexpr std::uint32_t kCell = 8;
-            std::array<std::uint8_t, kTexW * kTexH * 4> tex_bytes{};
-            for (std::uint32_t y = 0; y < kTexH; ++y) {
-                for (std::uint32_t x = 0; x < kTexW; ++x) {
-                    const bool checker = ((x / kCell) ^ (y / kCell)) & 1u;
-                    const std::uint8_t r8 = checker ? 0xE0 : 0x30;
-                    const std::uint8_t g8 = checker ? 0x95 : 0x40;
-                    const std::uint8_t b8 = checker ? 0x35 : 0x4C;
-                    const auto i = (y * kTexW + x) * 4u;
-                    tex_bytes[i + 0] = r8;
-                    tex_bytes[i + 1] = g8;
-                    tex_bytes[i + 2] = b8;
-                    tex_bytes[i + 3] = 0xFF;
+            const mge::assets::GltfMesh*     mesh    = nullptr;
+            const mge::assets::DecodedImage* tex_img = nullptr;
+            mge::assets::GltfMesh proc_fallback;
+            if (gltf != nullptr && !gltf->meshes.empty()) {
+                mesh = &gltf->meshes.front();
+                if (mesh->material_index < gltf->materials.size()) {
+                    const auto& mat = gltf->materials[mesh->material_index];
+                    if (mat.base_color_tex != mge::assets::GltfMaterial::npos &&
+                        mat.base_color_tex < gltf->textures.size() &&
+                        gltf->textures[mat.base_color_tex].image.valid()) {
+                        tex_img = &gltf->textures[mat.base_color_tex].image;
+                    }
                 }
+                std::printf("[hello_metal] glTF: '%s' (%zu verts, %zu indices)%s\n",
+                            mesh->name.c_str(),
+                            mesh->vertices.size(),
+                            mesh->indices.size(),
+                            tex_img ? " + base-color texture" : "");
+            } else {
+                proc_fallback = mge::assets::make_textured_cube();
+                mesh          = &proc_fallback;
             }
 
+            r->gltf_index_count = static_cast<std::uint32_t>(mesh->indices.size());
+            r->gltf_vbuf = upload(mesh->vertices.data(),
+                                   mesh->vertices.size() *
+                                       sizeof(mge::assets::GltfVertex),
+                                   BufferUsage::Vertex, "gltf.mesh.vbuf");
+            r->gltf_ibuf = upload(mesh->indices.data(),
+                                   mesh->indices.size() *
+                                       sizeof(std::uint32_t),
+                                   BufferUsage::Index, "gltf.mesh.ibuf");
+
             TextureDesc td;
-            td.width   = kTexW;
-            td.height  = kTexH;
             td.format  = PixelFormat::RGBA8Unorm;
             td.usage   = TextureUsage::ShaderRead | TextureUsage::CopyDst;
             td.storage = StorageMode::Shared;
-            td.label   = "gltf.cube.basecolor";
-            r->gltf_base_tex = r->device->create_texture(td);
-            if (r->gltf_base_tex) {
-                r->gltf_base_tex->upload_region(0, 0, 0, kTexW, kTexH,
-                                                  tex_bytes.data(),
-                                                  kTexW * 4u);
+
+            if (tex_img != nullptr) {
+                td.width  = tex_img->width;
+                td.height = tex_img->height;
+                td.label  = "gltf.basecolor";
+                r->gltf_base_tex = r->device->create_texture(td);
+                if (r->gltf_base_tex) {
+                    r->gltf_base_tex->upload_region(
+                        0, 0, 0,
+                        tex_img->width, tex_img->height,
+                        tex_img->pixels.get(),
+                        tex_img->bytes_per_row());
+                }
+            } else {
+                // M25b fallback — 64×64 RGBA8 checker so the textured PBR path
+                // exercises a non-trivial sample even without `--gltf`.
+                constexpr std::uint32_t kTexW = 64;
+                constexpr std::uint32_t kTexH = 64;
+                constexpr std::uint32_t kCell = 8;
+                std::array<std::uint8_t, kTexW * kTexH * 4> tex_bytes{};
+                for (std::uint32_t y = 0; y < kTexH; ++y) {
+                    for (std::uint32_t x = 0; x < kTexW; ++x) {
+                        const bool checker = ((x / kCell) ^ (y / kCell)) & 1u;
+                        const std::uint8_t r8 = checker ? 0xE0 : 0x30;
+                        const std::uint8_t g8 = checker ? 0x95 : 0x40;
+                        const std::uint8_t b8 = checker ? 0x35 : 0x4C;
+                        const auto i = (y * kTexW + x) * 4u;
+                        tex_bytes[i + 0] = r8;
+                        tex_bytes[i + 1] = g8;
+                        tex_bytes[i + 2] = b8;
+                        tex_bytes[i + 3] = 0xFF;
+                    }
+                }
+                td.width  = kTexW;
+                td.height = kTexH;
+                td.label  = "gltf.basecolor.checker";
+                r->gltf_base_tex = r->device->create_texture(td);
+                if (r->gltf_base_tex) {
+                    r->gltf_base_tex->upload_region(0, 0, 0, kTexW, kTexH,
+                                                      tex_bytes.data(),
+                                                      kTexW * 4u);
+                }
             }
 
             SamplerDesc sd;
@@ -1675,7 +1723,7 @@ struct DeferredRenderer {
             sd.mag_filter = FilterMode::Linear;
             sd.address_u  = AddressMode::Repeat;
             sd.address_v  = AddressMode::Repeat;
-            sd.label      = "gltf.cube.sampler";
+            sd.label      = "gltf.sampler";
             r->gltf_sampler = r->device->create_sampler(sd);
         }
 
@@ -2392,8 +2440,52 @@ int run_windowed(Args a) {
     std::printf("[hello_metal] cube field: %ux%u -> %zu cubes (after empty-center skip)\n",
                 a.cube_side, a.cube_side, cubes_proto.size());
 
+    // M25c — load a glTF scene up front if --gltf was given. Failure to parse
+    // is non-fatal: we fall through to the M25b procedural checker cube.
+    std::optional<mge::assets::GltfScene> gltf_scene;
+    if (!a.gltf_path.empty()) {
+        gltf_scene = mge::assets::load_gltf(a.gltf_path);
+        if (!gltf_scene || gltf_scene->meshes.empty()) {
+            std::fprintf(stderr,
+                         "[hello_metal] --gltf %s failed to load — "
+                         "falling back to procedural cube\n",
+                         a.gltf_path.c_str());
+            gltf_scene.reset();
+        }
+    }
+
+    // M25c — derive a fit-to-box transform for the loaded mesh so any scale
+    // of glTF reads at roughly the same size as the M25b procedural unit cube.
+    // Target box is ~1.5m, centered above the cube field next to the tube.
+    mge::math::Mat4 gltf_model = mge::math::translation(
+        mge::math::Vec3{1.2f, 2.5f, -1.5f});
+    if (gltf_scene && !gltf_scene->meshes.front().vertices.empty()) {
+        const auto& mesh = gltf_scene->meshes.front();
+        mge::math::Vec3 lo{ std::numeric_limits<float>::infinity(),
+                              std::numeric_limits<float>::infinity(),
+                              std::numeric_limits<float>::infinity()};
+        mge::math::Vec3 hi{-std::numeric_limits<float>::infinity(),
+                             -std::numeric_limits<float>::infinity(),
+                             -std::numeric_limits<float>::infinity()};
+        for (const auto& v : mesh.vertices) {
+            lo.x = std::min(lo.x, v.position.x); hi.x = std::max(hi.x, v.position.x);
+            lo.y = std::min(lo.y, v.position.y); hi.y = std::max(hi.y, v.position.y);
+            lo.z = std::min(lo.z, v.position.z); hi.z = std::max(hi.z, v.position.z);
+        }
+        const mge::math::Vec3 center{(lo.x + hi.x) * 0.5f,
+                                       (lo.y + hi.y) * 0.5f,
+                                       (lo.z + hi.z) * 0.5f};
+        const float extent = std::max({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z, 1e-4f});
+        const float target = 1.5f;
+        const float s      = target / extent;
+        gltf_model = mge::math::translation(mge::math::Vec3{1.2f, 2.5f, -1.5f}) *
+                     mge::math::scale(mge::math::Vec3{s, s, s}) *
+                     mge::math::translation(mge::math::Vec3{-center.x, -center.y, -center.z});
+    }
+
     constexpr PixelFormat backbuffer_fmt = PixelFormat::BGRA8UnormSrgb;
-    auto r = DeferredRenderer::create(backbuffer_fmt, instance_cap);
+    auto r = DeferredRenderer::create(backbuffer_fmt, instance_cap,
+                                       gltf_scene ? &*gltf_scene : nullptr);
     if (!r) { std::fprintf(stderr, "renderer init failed\n"); return 1; }
     const auto info = r->device->info();
     std::printf("[hello_metal] device: %s, instance_cap=%zu  RT=%s\n",
@@ -2611,15 +2703,15 @@ int run_windowed(Args a) {
             inst.mr[2]        = 0.0f;  inst.mr[3] = 0.0f;
             instances[tube_slot] = inst;
         }
-        // M25b — textured PBR cube at [gltf_slot]: behind the sphere row,
-        // raised so it's visible above the cube field. Albedo tint x1 lets
-        // the texture show through unmodulated; metallic 0.0, roughness 0.7.
+        // M25b/M25c — textured PBR mesh at [gltf_slot]: behind the sphere
+        // row, raised so it's visible above the cube field. Albedo tint x1
+        // lets the texture show through unmodulated; metallic 0.0,
+        // roughness 0.7. When --gltf is active the model matrix is the
+        // fit-to-box transform derived from the mesh's AABB.
         {
             InstanceData inst{};
-            const mge::math::Mat4 m =
-                mge::math::translation(mge::math::Vec3{1.2f, 2.5f, -1.5f});
-            inst.model        = m;
-            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(m));
+            inst.model        = gltf_model;
+            inst.model_inv_t  = mge::math::transpose(mge::math::inverse(gltf_model));
             inst.albedo_ao[0] = 1.0f; inst.albedo_ao[1] = 1.0f;
             inst.albedo_ao[2] = 1.0f; inst.albedo_ao[3] = 1.0f;
             inst.mr[0]        = 0.0f; inst.mr[1] = 0.70f;

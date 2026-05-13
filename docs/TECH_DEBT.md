@@ -300,6 +300,22 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: rhi
 - **Created**: 2026-05-12
 
+### [P3-M25C-NORMAL-MR-001] glTF demo samples base-color only — normal + MR maps unused
+- **What**: M25c loads `GltfScene` via cgltf and uploads the active material's base-color texture, but `k_gltf_gbuffer_msl`'s fragment stage still uses the per-instance flat MR (`inst.mr.g` for roughness, `inst.mr.r` for metallic) and writes only the per-vertex normal into the G-Buffer. DamagedHelmet's `normalTexture` + `metallicRoughnessTexture` ride along in the parsed scene but never reach the GPU.
+- **Why now**: M25c was scoped to prove the CLI + base-color path. Normal mapping needs either glTF vertex tangents (cgltf exposes them but we don't read `cgltf_attribute_type_tangent` yet) or derivative-based TBN reconstruction (cheaper, fewer codepaths, slightly worse on low-frequency surfaces). Metallic-roughness is trivial (single sample modulating `inst.mr`) but wants to ship alongside the normal-map work so the milestone slice covers a real PBR asset end-to-end.
+- **Cost if left**: DamagedHelmet (and any real glTF) reads as a flat-shaded base-color decal — visually the M25c slice undersells the deferred PBR pipeline. RT reflections off the metallic spheres also can't pick up the helmet's metal/dielectric variation.
+- **Fix path**: M25d. Either (a) extend `GltfVertex` to `GltfVertex+tangent` (back to 64 B, aligned), have `gltf_load.cpp` read `cgltf_attribute_type_tangent` (and generate it via MikkTSpace when missing), and add a TBN matrix in the vertex stage; or (b) compute TBN in the fragment via `dfdx/dfdy` against the UV + interpolated position. Then plumb a second + third texture binding (`normal_tex` → `[[texture(1)]]`, `mr_tex` → `[[texture(2)]]`) through the demo, modulate `inst.mr` with the sampled MR, sample-and-normalize the tangent-space normal, transform to world.
+- **Owner**: renderer + assets
+- **Created**: 2026-05-13
+
+### [P3-M25C-MULTI-MESH-001] glTF demo consumes only `scene.meshes.front()`
+- **What**: `DeferredRenderer::create` picks `gltf->meshes.front()` and its single base-color texture. Any glTF with multiple primitives or multiple materials shows only the first triangulated primitive; the rest of the parsed scene is dropped on the floor.
+- **Why now**: M25c targets a "load a real .glb and see it render" slice. Multi-primitive support wants either multiple `gltf_gbuffer_pso` draws (one per primitive, each binding its own texture set) or a bindless texture array — both bigger than the M25c slice.
+- **Cost if left**: Demo can't render multi-material assets (e.g. Khronos `FlightHelmet`, any character with separate body/clothing materials). The asset pipeline doesn't model material binding tables yet.
+- **Fix path**: Phase 3 asset pipeline milestone. Build a `GltfRenderable` struct = `{vbuf, ibuf, base_color_tex, normal_tex, mr_tex, sampler}` and emit one draw per primitive in the gbuffer pass. Long-term lands inside the ECS proper as a `MeshRenderer` component.
+- **Owner**: renderer + assets
+- **Created**: 2026-05-13
+
 ### [P3-RT-REFIT-001] TLAS rebuilds in full every frame; refit not used
 - **What**: `rebuild_dynamic_tlas()` calls `Device::build_acceleration_structure` for both the tube BLAS and the scene TLAS each frame. Allocates a fresh AS + scratch buffer each time; blocks the CPU until the GPU finishes.
 - **Why now**: Refit (`MTLAccelerationStructureRefitOptions`) requires an existing AS allocated with `allowUpdate = YES` plus the same topology between rebuilds. Adding that to the RHI is its own slice of work, and at 1018 instances the full rebuild still hits ~3 ms — acceptable for the demo.

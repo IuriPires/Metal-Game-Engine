@@ -248,8 +248,16 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [x] Lighting downstream unchanged — the textured G-Buffer feeds the same deferred lighting / shadow / RT path as everything else. Demo holds ~80 FPS on M1 Pro with editor on (dominated by the M24 TLAS rebuild).
   - [—] **Real .glb file loading in the demo** — M25c. The `load_gltf` loader is wired and tested; demo only needs CLI plumbing (`--gltf <path>`) + texture-import + material-binding glue.
   - [—] **Normal + metallic-roughness maps** — M25c.
-- [ ] M25c — Real glTF assets + normal / MR maps
-- [ ] ECS proper (archetype storage)
+- [x] **M25c — Real glTF assets in the demo (base-color only)**
+  - [x] **`--gltf <path>` CLI** in `examples/hello_metal` — `run_windowed()` calls `mge::assets::load_gltf` up front. Parse failures fall through to the M25b checker fallback (non-fatal — demo always boots).
+  - [x] **`DeferredRenderer::create(..., const GltfScene*)`** — when a scene is supplied, the first triangulated mesh's vertex + index buffers are uploaded in the `GltfVertex` layout and its material's base-color texture is uploaded via `Texture::upload_region` instead of the M25b procedural checker. Same `gltf_gbuffer_pso` consumes both paths.
+  - [x] **Fit-to-box transform** — derives the loaded mesh's AABB once, then `translate(1.2, 2.5, -1.5) × scale(1.5/extent) × translate(-center)` so any glTF reads at roughly the M25b proc-cube size regardless of source units.
+  - [x] **`assets/gltf/` + `assets/README.md`** — `assets/gltf/` is gitignored; the README captures the curl recipe for Khronos's `DamagedHelmet.glb` (3.6 MB, CC-BY-4.0) plus other sample candidates.
+  - [x] **Smoke**: `--gltf assets/gltf/DamagedHelmet.glb` loads `mesh_helmet_LP_13930damagedHelmet/0` (14 556 verts / 46 356 indices) + base-color texture; frame 60 last 13.07 ms (~76 FPS) on M1 Pro at 1280×720. 83/83 tests green.
+  - [—] **Normal map + TBN reconstruction** — M25d. Tracked as `P3-M25C-NORMAL-MR-001`.
+  - [—] **Metallic-roughness map sampling** — M25d. Tracked as `P3-M25C-NORMAL-MR-001`.
+  - [—] **Multi-primitive / multi-material glTF** — today we only consume `scene.meshes.front()` and its base-color texture; the rest is parsed but unused. Tracked as `P3-M25C-MULTI-MESH-001`.
+- [ ] M25d — Normal + MR maps on glTF assets
 - [ ] ECS proper (archetype storage)
 - [ ] Full job system (work stealing, priorities)
 - [ ] Physics (Jolt integration)

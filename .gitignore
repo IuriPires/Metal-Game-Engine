@@ -100,3 +100,7 @@ external_docs/metal/*.zip
 
 # Design handoffs from Claude Design (kept local; reference only, not source of truth)
 notes/design_drop/
+
+# glTF demo assets — fetched locally per assets/README.md, not source of truth
+assets/gltf/
+!assets/README.md
