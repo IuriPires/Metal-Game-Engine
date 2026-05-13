@@ -129,33 +129,20 @@ void Editor::render(const EngineState& state, rhi::RenderEncoder& enc,
                          /*depth_texture=*/nullptr);
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
-    bool hovered = false;
-    draw_chrome(state, selection_, &hovered);
+    bool hovered    = false;
+    bool gizmo_used = false;
+    // ImGuizmo::Manipulate runs inside draw_chrome, hosted in the central
+    // viewport child (see chrome.cpp). That's the canonical pattern: the
+    // gizmo uses that window's draw list + screen rect so its hit testing
+    // matches what's drawn, instead of fighting with the transparent
+    // center child for mouse capture.
+    const int gizmo_op_int =
+          gizmo_op_ == GizmoOp::Rotate ? 1
+        : gizmo_op_ == GizmoOp::Scale  ? 2
+        : 0;
+    draw_chrome(state, selection_, &hovered, gizmo_op_int, &gizmo_used);
     viewport_hovered_ = hovered;
-
-    // M28a — Gizmo manipulation. Hosts the ImGuizmo widget on top of the
-    // viewport when the demo supplies an active model + view + projection.
-    // Drawn on the main viewport's draw list so it overlays the rasterised
-    // scene without being clipped by any panel child.
-    gizmo_active_ = false;
-    if (state.active_model != nullptr
-        && state.view_matrix != nullptr
-        && state.projection_matrix != nullptr) {
-        ImGuizmo::SetOrthographic(false);
-        ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
-        const ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGuizmo::SetRect(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y);
-
-        ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
-        switch (gizmo_op_) {
-            case GizmoOp::Translate: op = ImGuizmo::TRANSLATE; break;
-            case GizmoOp::Rotate:    op = ImGuizmo::ROTATE;    break;
-            case GizmoOp::Scale:     op = ImGuizmo::SCALE;     break;
-        }
-        ImGuizmo::Manipulate(state.view_matrix, state.projection_matrix,
-                              op, ImGuizmo::WORLD, state.active_model);
-        gizmo_active_ = ImGuizmo::IsUsing();
-    }
+    gizmo_active_     = gizmo_used;
 
     populate_input_state(input_state_, viewport_hovered_ && !gizmo_active_);
     ImGui::Render();

@@ -3,6 +3,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "ImGuizmo.h"
 
 #include "mge/core/version.h"
 #include "mge/frame_graph/frame_graph.h"
@@ -1029,7 +1030,9 @@ void draw_inspector(const EngineState& state, Selection& sel) {
 }  // namespace
 
 void draw_chrome(const EngineState& state, Selection& sel,
-                   bool* viewport_hovered_out) {
+                   bool* viewport_hovered_out,
+                   int   gizmo_op,
+                   bool* gizmo_active_out) {
     // Full-screen invisible window holding the entire editor chrome. ImGui's
     // viewport drives the size; we cover the swapchain.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -1084,6 +1087,36 @@ void draw_chrome(const EngineState& state, Selection& sel,
         *viewport_hovered_out = ImGui::IsWindowHovered(
             ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     }
+
+    // M28a — Gizmo Manipulate hosted inside the viewport child so
+    // SetDrawlist() picks this window's draw list (gizmo draws above the
+    // viewport, below other panels) and SetRect() uses this window's
+    // screen rect (hit testing matches what's drawn). Hosting it after
+    // draw_chrome returned drew the gizmo into BackgroundDrawList which
+    // sat under the transparent center child — the child captured the
+    // click as ImGui input before ImGuizmo could see it.
+    bool gizmo_using = false;
+    if (state.active_model != nullptr
+        && state.view_matrix != nullptr
+        && state.projection_matrix != nullptr) {
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const ImVec2 ws = ImGui::GetWindowSize();
+        ImGuizmo::SetRect(wp.x, wp.y, ws.x, ws.y);
+
+        ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+        switch (gizmo_op) {
+            case 1: op = ImGuizmo::ROTATE; break;
+            case 2: op = ImGuizmo::SCALE;  break;
+            default: op = ImGuizmo::TRANSLATE; break;
+        }
+        ImGuizmo::Manipulate(state.view_matrix, state.projection_matrix,
+                              op, ImGuizmo::WORLD, state.active_model);
+        gizmo_using = ImGuizmo::IsUsing();
+    }
+    if (gizmo_active_out != nullptr) *gizmo_active_out = gizmo_using;
+
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
     ImGui::SameLine(0.0f, 0.0f);
