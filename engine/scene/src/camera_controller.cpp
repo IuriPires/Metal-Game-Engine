@@ -93,13 +93,21 @@ void OrbitCameraController::update(Camera& cam, const InputState& in, float dt) 
     (void)dt;  // orbit motion is mouse-driven, not time-integrated.
     const bool hover = in.viewport_hovered;
 
+    // Mac trackpads / Magic Mouse don't have an MMB, so the "Option + MMB
+    // pan" Maya convention is unreachable without an external 3-button
+    // mouse. We therefore accept Option + Shift + LMB as an alternate pan
+    // binding — natural on a trackpad, and harmless on a regular mouse
+    // (Shift isn't otherwise used by the orbit controller). Option + MMB
+    // still works for users on a 3-button mouse.
     if (hover && in.mods.alt) {
-        if (in.is_down(Button::Left)) {
+        const bool shift_pan = in.mods.shift && in.is_down(Button::Left);
+        const bool mmb_pan   = in.is_down(Button::Middle);
+        if (in.is_down(Button::Left) && !in.mods.shift) {
             yaw   -= in.mouse_delta_x * orbit_sens;
             pitch += in.mouse_delta_y * orbit_sens;
             pitch  = std::clamp(pitch, -pitch_clamp, pitch_clamp);
         }
-        if (in.is_down(Button::Middle)) {
+        if (shift_pan || mmb_pan) {
             // Pan: move pivot along the camera basis at a rate proportional
             // to the orbit distance so the visual speed stays consistent at
             // any zoom level.

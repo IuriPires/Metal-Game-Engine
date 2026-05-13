@@ -206,3 +206,25 @@ TEST_CASE("OrbitCameraController pan moves pivot in the screen plane") {
     // The pivot's Y stays put when only horizontal drag is applied.
     CHECK(orb.pivot.y == doctest::Approx(pivot_before.y));
 }
+
+TEST_CASE("OrbitCameraController Option+Shift+LMB pans (Mac trackpad path)") {
+    Camera c;
+    c.look_at({0.0f, 0.0f, 5.0f}, {0, 0, 0}, {0, 1, 0});
+    OrbitCameraController orb;
+    orb.sync_from(c);
+    const Vec3  pivot_before = orb.pivot;
+    const float yaw_before   = orb.yaw;
+
+    InputState in = make_input();
+    in.mods.alt   = true;
+    in.mods.shift = true;
+    in.button_down[static_cast<std::size_t>(Button::Left)] = true;
+    in.mouse_delta_x = 100.0f;
+    orb.update(c, in, 1.0f / 60.0f);
+
+    // Pan happens — pivot.x moves.
+    CHECK(orb.pivot.x != pivot_before.x);
+    // The Alt+LMB orbit binding is *suppressed* by Shift — yaw stays put,
+    // otherwise pan and orbit would happen on the same gesture.
+    CHECK(orb.yaw == doctest::Approx(yaw_before));
+}

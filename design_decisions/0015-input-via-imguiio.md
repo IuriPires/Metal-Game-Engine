@@ -135,3 +135,14 @@ adds direct NSEvent capture in the platform layer for editor-off mode.
 - Maya viewport navigation conventions (Alt+LMB/MMB/RMB) — same in
   Houdini, 3ds Max, Blender (with the "industry-standard keymap"
   preset), Marmoset Toolbag.
+
+## Addendum — macOS trackpad ergonomics (2026-05-13)
+
+Mac trackpads and the Magic Mouse don't expose a Middle Mouse Button. The
+Maya `Alt+MMB pan` binding is therefore unreachable for trackpad users.
+`OrbitCameraController` adds `Option+Shift+LMB drag` as an alternate pan
+path so trackpads work out of the box; `Option+MMB drag` still pans for
+users on a 3-button external mouse. The orbit gesture (`Option+LMB drag`)
+is suppressed when Shift is held to avoid pan + orbit firing on the same
+input. Scroll-wheel dolly already maps to the trackpad's 2-finger drag via
+ImGui's NSEvent handling, so dolly works on a trackpad without a modifier.

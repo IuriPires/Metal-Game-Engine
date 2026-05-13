@@ -52,15 +52,22 @@ private:
 
 // ---------------- Orbit (Maya-style) ----------------
 //
-// Maya / Houdini / Blender-with-emulation use Alt as the orbit modifier.
-// While Alt is held:
-//   - LMB + drag = orbit (yaw + pitch around the pivot)
-//   - MMB + drag = pan (translate the pivot + eye in screen space)
-//   - RMB + drag or scroll wheel = dolly (move along the eye→pivot ray)
+// Maya / Houdini / Blender-with-emulation use the Alt modifier (the
+// **Option** key on macOS, ⌥; same physical key, just a different label).
+// While Option/Alt is held:
+//   - LMB + drag           = orbit (yaw + pitch around the pivot)
+//   - Shift + LMB + drag   = pan (Mac-friendly alternate; trackpads have
+//                                  no MMB so this is the primary path)
+//   - MMB + drag           = pan (legacy 3-button-mouse binding, kept
+//                                  working for users with external mice)
+//   - RMB + drag           = dolly (vertical drag in/out)
+//   - scroll wheel         = dolly (works without any modifier; 2-finger
+//                                    drag on a Mac trackpad reaches this
+//                                    path)
 //
-// Without Alt the controller respects only the scroll wheel for dolly,
-// because scroll is unambiguous and otherwise the user has no way to zoom
-// in / out without holding a modifier.
+// Without Option/Alt the controller respects only the scroll wheel for
+// dolly, because scroll is unambiguous and otherwise the user has no way
+// to zoom in / out without holding a modifier.
 //
 // State is { pivot, yaw, pitch, distance }. The camera's eye + look_at are
 // derived from those four numbers each frame, so the rest of the engine
