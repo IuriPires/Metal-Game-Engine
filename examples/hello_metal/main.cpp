@@ -2614,7 +2614,11 @@ int run_windowed(Args a) {
         // direct capture lands in M26b), so the camera stays static.
         if (editor) {
             const auto& in_state = editor->input_state();
-            if (in_state.is_pressed(mge::scene::Key::Tab)) {
+            // F1 toggles between Orbit and Fly. Tab was the obvious choice
+            // but ImGui's NavEnableKeyboard claims ownership of Tab once a
+            // widget gains focus, silently filtering it from IsKeyDown for
+            // non-owners; F1 has no such conflict.
+            if (in_state.is_pressed(mge::scene::Key::F1)) {
                 cam_mode = (cam_mode == CamMode::Orbit) ? CamMode::Fly
                                                          : CamMode::Orbit;
                 if (cam_mode == CamMode::Orbit) {
@@ -2626,6 +2630,7 @@ int run_windowed(Args a) {
                 std::printf("[hello_metal] camera mode: %s\n",
                             cam_mode == CamMode::Orbit ? "Orbit (Maya)"
                                                         : "Fly (FPS)");
+                std::fflush(stdout);
             }
             const float ctrl_dt = 1.0f / std::max(1.0f, a.target_fps);
             if (cam_mode == CamMode::Orbit) {

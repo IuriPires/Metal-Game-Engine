@@ -19,7 +19,12 @@ enum class Key : std::uint8_t {
     Unknown = 0,
     W, A, S, D, Q, E,
     F,   // frame selection (future)
-    Tab, // controller toggle
+    Tab, // ImGui's NavEnableKeyboard claims Tab once any widget gets focus,
+         // so this is unsafe for application hotkeys — kept in the enum
+         // because the populate layer still tracks its state, but the demo
+         // moved its camera-mode toggle to F1.
+    F1,  // camera-mode toggle in the demo
+    F2,
     Esc,
     Space,
     LeftBracket, RightBracket,

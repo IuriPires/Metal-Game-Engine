@@ -23,6 +23,8 @@ namespace {
         case ImGuiKey_Q: return scene::Key::Q;
         case ImGuiKey_E: return scene::Key::E;
         case ImGuiKey_F: return scene::Key::F;
+        case ImGuiKey_F1:          return scene::Key::F1;
+        case ImGuiKey_F2:          return scene::Key::F2;
         case ImGuiKey_Tab:         return scene::Key::Tab;
         case ImGuiKey_Escape:      return scene::Key::Esc;
         case ImGuiKey_Space:       return scene::Key::Space;

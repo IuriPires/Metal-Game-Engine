@@ -158,7 +158,8 @@ public:
                 std::uint32_t        drawable_width,
                 std::uint32_t        drawable_height);
 
-    // Visibility (toggled by F1 in the demo).
+    // Visibility — exposed for future hotkey wiring. M26a took the F1 slot
+    // for camera-mode toggle; pick a different key if/when this gets wired.
     [[nodiscard]] bool visible() const noexcept { return visible_; }
     void               set_visible(bool v) noexcept { visible_ = v; }
 
