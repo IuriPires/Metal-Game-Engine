@@ -18,6 +18,7 @@
 
 #include "mge/rhi/device.h"
 #include "mge/rhi/encoder.h"
+#include "mge/scene/input_state.h"
 
 #include <memory>
 #include <string>
@@ -164,15 +165,32 @@ public:
     [[nodiscard]] Selection& selection() noexcept { return selection_; }
     [[nodiscard]] const Selection& selection() const noexcept { return selection_; }
 
+    // M26a — true iff the mouse cursor was over the central 3D viewport
+    // child during the most recent `render()` call (i.e. not over any
+    // editor panel). The demo gates camera input on this so panel clicks
+    // don't accidentally fly the camera. Always `true` when the editor is
+    // hidden or when no frame has been rendered yet.
+    [[nodiscard]] bool viewport_hovered() const noexcept { return viewport_hovered_; }
+
+    // M26a — Frame-local input snapshot built from ImGuiIO inside `render()`.
+    // Camera controllers (and any future interactive system) read this.
+    // Caller should AND `is_down()` results with `viewport_hovered()` to
+    // gate mouse input on cursor location.
+    [[nodiscard]] const scene::InputState& input_state() const noexcept {
+        return input_state_;
+    }
+
     // Internal: lets the platform shim forward NSEvents.
     [[nodiscard]] void* native_window() const noexcept { return native_window_; }
 
 private:
     Editor() = default;
-    bool        visible_       = true;
-    Selection   selection_{};
-    void*       native_window_ = nullptr;
-    void*       metal_device_  = nullptr;
+    bool             visible_           = true;
+    bool             viewport_hovered_  = true;
+    Selection        selection_{};
+    void*            native_window_     = nullptr;
+    void*            metal_device_      = nullptr;
+    scene::InputState input_state_{};
 };
 
 }  // namespace mge::editor

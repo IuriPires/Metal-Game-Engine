@@ -257,7 +257,21 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [—] **Normal map + TBN reconstruction** — M25d. Tracked as `P3-M25C-NORMAL-MR-001`.
   - [—] **Metallic-roughness map sampling** — M25d. Tracked as `P3-M25C-NORMAL-MR-001`.
   - [—] **Multi-primitive / multi-material glTF** — today we only consume `scene.meshes.front()` and its base-color texture; the rest is parsed but unused. Tracked as `P3-M25C-MULTI-MESH-001`.
+- [x] **M26a — Interactive cameras (Fly + Orbit, ImGuiIO-driven)**
+  - [x] **`engine/scene/input_state.h`** — platform-agnostic `InputState` struct: mouse pos/delta/scroll, button down + edges (LMB/RMB/MMB), `key_down` + `key_pressed` for a closed-set `Key` enum (WASD, QE, Tab, Esc, Space, F, brackets, digits 1/3/7), `Modifiers` (shift/ctrl/alt/super), routing hints (`viewport_hovered`, `keyboard_focused`).
+  - [x] **`engine/scene/camera_controller.{h,cpp}`** — two concrete controllers, no virtual dispatch.
+    - `FlyCameraController` — RMB-hold gates everything (no accidental fly when you click an empty area). WASD translates along camera basis, Q/E or Space along world-up; mouse delta yaws/pitches with a ±85° clamp; Shift boosts speed 4×.
+    - `OrbitCameraController` — Maya-style. Alt+LMB orbit (yaw + clamped pitch around pivot), Alt+MMB pan (world-space, scaled by orbit distance so visual speed stays consistent), Alt+RMB drag or scroll wheel dollies in/out (no modifier needed for scroll). State is `{pivot, yaw, pitch, distance}`; eye + view derived each frame.
+    - Both expose `sync_from(Camera&)` so swapping between them doesn't snap the view.
+  - [x] **`engine/scene/CMakeLists.txt`** flipped from INTERFACE to STATIC for the new TU. Lib still PUBLIC-includes `mge::math`.
+  - [x] **`Editor::input_state()` + `Editor::viewport_hovered()`** — editor populates a `scene::InputState` from `ImGuiIO` inside `render()` and records whether the central `##center` viewport child was hovered. ADR-0015 records why ImGuiIO is the primary input source.
+  - [x] **Demo**: holds both controllers + a `CamMode` enum (default Orbit). Each loop iteration, if `editor` exists, reads `editor->input_state()`, handles Tab to toggle mode (re-syncs the active controller from the live camera), then runs the active controller's `update(camera, in_state, dt)` before building the FG. 1-frame input→camera lag, imperceptible at 60+ fps.
+  - [x] **10 controller unit tests** — inert-without-RMB, WASD motion, shift boost, pitch clamp, orbit sync round-trip, Alt+LMB orbit, scroll dolly, distance clamp, hover gate, MMB pan. 93/93 tests green.
+  - [—] **NSEvent direct capture for editor-off mode** — M26b. Tracked as `P3-INPUT-EDITOR-OFF-001`. Without the editor the demo's camera stays static (matches Phase 1 behaviour).
+  - [—] **Orthographic cameras + selector (Top / Front / Side / Persp + 1/3/7/0 hotkeys)** — M26b. Tracked as `P3-CAM-ORTHO-001`.
+  - [—] **F = frame selection** — needs scene-selection bbox plumbing. Phase 3 polish.
 - [ ] M25d — Normal + MR maps on glTF assets
+- [ ] M26b — NSEvent direct capture + ortho cameras + viewport selector
 - [ ] ECS proper (archetype storage)
 - [ ] Full job system (work stealing, priorities)
 - [ ] Physics (Jolt integration)

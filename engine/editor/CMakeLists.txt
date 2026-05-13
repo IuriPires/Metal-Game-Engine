@@ -32,6 +32,7 @@ target_link_libraries(mge_editor
         mge::core
         mge::profile
         mge::frame_graph
+        mge::scene
     PRIVATE
         mge::platform
         mge::rhi_metal

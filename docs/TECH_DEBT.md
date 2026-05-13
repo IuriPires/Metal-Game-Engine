@@ -300,6 +300,30 @@ Track of conscious shortcuts. Each entry has: what, why, cost, fix path.
 - **Owner**: rhi
 - **Created**: 2026-05-12
 
+### [P3-INPUT-EDITOR-OFF-001] No camera input without --editor
+- **What**: M26a routes camera input through `Editor::input_state()`, which is populated from `ImGuiIO`. When `--editor` is not passed, ImGui isn't bootstrapped and the engine has no event source — the camera stays at its initial `look_at` pose for the whole run.
+- **Why now**: ADR-0015 records the decision to use ImGuiIO as the primary input source for Phase 2. Direct NSEvent capture in the platform layer is a separate slice (M26b) that wants to land alongside the multi-viewport / ortho-camera work.
+- **Cost if left**: Demo runs (e.g. CI smoke, `--frames N` headless-ish) can't move the camera. Acceptable while the engine is authored from inside the editor.
+- **Fix path**: M26b. Add an event queue in `engine/platform/macos/Window` populated by an NSEvent monitor on the content view; expose `Window::poll_input(InputState&)`. When `--editor` is on, fall back to the editor's snapshot; when off, use the platform queue. Either source feeds the same `InputState`.
+- **Owner**: platform + editor
+- **Created**: 2026-05-13
+
+### [P3-CAM-ORTHO-001] Single perspective camera; no ortho / multi-view yet
+- **What**: M26a ships one camera, one controller pair (Fly + Orbit). No orthographic projection, no top/front/side views, no viewport selector in the toolbar.
+- **Why now**: M26a scoped to "make the existing camera interactive". Ortho cameras want their own projection helper (`mge::math::orthographic_rh_zo` already exists for shadows — reusable) plus UI for switching, which expanded the slice past a single milestone.
+- **Cost if left**: Editor users can't quickly check alignment / silhouette from canonical axes. Tooling for level layout is limited.
+- **Fix path**: M26b. Add a `CameraComponent`-ish list of `{name, mode, projection, controller}` records in the demo. Toolbar dropdown + `1/3/7/0` hotkeys swap the active entry. `Camera::set_orthographic(width, height, znear, zfar)` mirrors `set_perspective`. Selector wires through `EngineState`.
+- **Owner**: editor + scene
+- **Created**: 2026-05-13
+
+### [P2-EDITOR-IMGUI-OSX-SHUTDOWN-001] ImGui OSX backend asserts on process exit
+- **What**: `Assertion failed: (Window == nullptr), function ~ImGui_ImplOSX_ViewportData, file imgui_impl_osx.mm, line 891.` fires after the demo prints its exit summary. The process has already finished its work; the assertion is in upstream ImGui's OSX viewport-data destructor running during ImGui context teardown.
+- **Why now**: Reproducible since M18 (the editor was introduced before M26a — this debt is pre-existing). Filed here so it gets fixed when M26b touches the editor lifecycle.
+- **Cost if left**: Spurious noise on exit. Doesn't crash the run before the assertion. CI noise if assert-aborts are treated as failures.
+- **Fix path**: Confirm upstream behaviour against latest ImGui (we currently pin a specific FetchContent SHA — bump it and retest). If still present, file upstream and either (a) carry a one-line patch in our fetch, or (b) suppress the assert in shutdown by clearing the platform handle before `ImGui::DestroyContext()`.
+- **Owner**: editor
+- **Created**: 2026-05-13
+
 ### [P3-M25C-NORMAL-MR-001] glTF demo samples base-color only — normal + MR maps unused
 - **What**: M25c loads `GltfScene` via cgltf and uploads the active material's base-color texture, but `k_gltf_gbuffer_msl`'s fragment stage still uses the per-instance flat MR (`inst.mr.g` for roughness, `inst.mr.r` for metallic) and writes only the per-vertex normal into the G-Buffer. DamagedHelmet's `normalTexture` + `metallicRoughnessTexture` ride along in the parsed scene but never reach the GPU.
 - **Why now**: M25c was scoped to prove the CLI + base-color path. Normal mapping needs either glTF vertex tangents (cgltf exposes them but we don't read `cgltf_attribute_type_tangent` yet) or derivative-based TBN reconstruction (cheaper, fewer codepaths, slightly worse on low-frequency surfaces). Metallic-roughness is trivial (single sample modulating `inst.mr`) but wants to ship alongside the normal-map work so the milestone slice covers a real PBR asset end-to-end.

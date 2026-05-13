@@ -35,6 +35,8 @@
 #include "mge/renderer/metal/metal_cpp.h"  // escape hatch for one-shot atlas upload
 #include "mge/rhi/rhi.h"
 #include "mge/scene/camera.h"
+#include "mge/scene/camera_controller.h"
+#include "mge/scene/input_state.h"
 
 #include "font8x8.h"
 
@@ -2547,6 +2549,19 @@ int run_windowed(Args a) {
                            0.1f, 200.0f);
     camera.look_at({0.0f, 3.0f, 7.0f}, {0, 1.2f, 0}, {0, 1, 0});
 
+    // M26a — interactive cameras. Default mode is Orbit (Maya-style: Alt+LMB
+    // orbit, Alt+MMB pan, Alt+RMB / scroll dolly) since it's the friendliest
+    // out-of-the-box for inspecting a static scene. Tab toggles to Fly mode
+    // (RMB-hold + WASD + mouse-look). Both controllers sync from the current
+    // camera pose so the swap doesn't snap the view.
+    enum class CamMode : std::uint8_t { Orbit, Fly };
+    CamMode                          cam_mode = CamMode::Orbit;
+    mge::scene::OrbitCameraController orbit;
+    mge::scene::FlyCameraController   fly;
+    orbit.sync_from(camera);
+    fly.sync_from(camera);
+    orbit.apply(camera);
+
     FrameGraph fg(*r->device);
 
     DemoCvars cvars{};
@@ -2590,6 +2605,34 @@ int run_windowed(Args a) {
             sync_drawable_size();
             camera.set_aspect(static_cast<float>(window.drawable_width()) /
                               static_cast<float>(window.drawable_height()));
+        }
+
+        // M26a — drive camera from input. When the editor is on, its input
+        // snapshot reflects events captured during the *previous* frame's
+        // editor->render() — a 1-frame lag that's imperceptible at 60+ fps.
+        // When the editor is off there's no input source today (NSEvent
+        // direct capture lands in M26b), so the camera stays static.
+        if (editor) {
+            const auto& in_state = editor->input_state();
+            if (in_state.is_pressed(mge::scene::Key::Tab)) {
+                cam_mode = (cam_mode == CamMode::Orbit) ? CamMode::Fly
+                                                         : CamMode::Orbit;
+                if (cam_mode == CamMode::Orbit) {
+                    orbit.sync_from(camera);
+                    orbit.apply(camera);
+                } else {
+                    fly.sync_from(camera);
+                }
+                std::printf("[hello_metal] camera mode: %s\n",
+                            cam_mode == CamMode::Orbit ? "Orbit (Maya)"
+                                                        : "Fly (FPS)");
+            }
+            const float ctrl_dt = 1.0f / std::max(1.0f, a.target_fps);
+            if (cam_mode == CamMode::Orbit) {
+                orbit.update(camera, in_state, ctrl_dt);
+            } else {
+                fly.update(camera, in_state, ctrl_dt);
+            }
         }
 
         // Demo mode cycles through (normal, paused, slow-mo, fast-fwd) every

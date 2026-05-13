@@ -1028,7 +1028,8 @@ void draw_inspector(const EngineState& state, Selection& sel) {
 
 }  // namespace
 
-void draw_chrome(const EngineState& state, Selection& sel) {
+void draw_chrome(const EngineState& state, Selection& sel,
+                   bool* viewport_hovered_out) {
     // Full-screen invisible window holding the entire editor chrome. ImGui's
     // viewport drives the size; we cover the swapchain.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -1076,6 +1077,13 @@ void draw_chrome(const EngineState& state, Selection& sel) {
                        ImGuiChildFlags_None,
                        ImGuiWindowFlags_NoScrollbar |
                        ImGuiWindowFlags_NoBackground);
+    // M26a — central column is the 3D viewport. Record whether the cursor
+    // is currently over it so the demo can route camera input only when the
+    // user isn't hovering an actual panel.
+    if (viewport_hovered_out != nullptr) {
+        *viewport_hovered_out = ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    }
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
     ImGui::SameLine(0.0f, 0.0f);
