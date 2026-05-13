@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mge/math/aabb.h"
 #include "mge/math/mat.h"
 #include "mge/math/vec.h"
 
@@ -65,6 +66,32 @@ public:
 
     [[nodiscard]] math::Mat4 view_projection() const noexcept {
         return projection() * view();
+    }
+
+    // M27 — Build a world-space ray from a point in normalized device
+    // coordinates. `ndc_x` / `ndc_y` are in [-1, 1] (Metal NDC, origin at
+    // center, +Y up). Origin is the camera eye; direction is unit length.
+    //
+    // Inverting the view-projection lets us unproject the near and far
+    // points of the NDC ray and take the difference — works for any
+    // perspective projection without needing to know the fovy/aspect.
+    [[nodiscard]] math::Ray ray_from_ndc(float ndc_x, float ndc_y) const noexcept {
+        const math::Mat4 vp_inv = math::inverse(view_projection());
+        // Metal NDC z range is [0, 1]; near plane is z=0, far is z=1.
+        const math::Vec4 p_near_h = vp_inv * math::Vec4{ndc_x, ndc_y, 0.0f, 1.0f};
+        const math::Vec4 p_far_h  = vp_inv * math::Vec4{ndc_x, ndc_y, 1.0f, 1.0f};
+        const math::Vec3 p_near{p_near_h.x / p_near_h.w,
+                                 p_near_h.y / p_near_h.w,
+                                 p_near_h.z / p_near_h.w};
+        const math::Vec3 p_far {p_far_h.x  / p_far_h.w,
+                                 p_far_h.y  / p_far_h.w,
+                                 p_far_h.z  / p_far_h.w};
+        math::Ray r;
+        r.origin = eye_;
+        r.dir    = math::normalize(math::Vec3{p_far.x - p_near.x,
+                                                p_far.y - p_near.y,
+                                                p_far.z - p_near.z});
+        return r;
     }
 
 private:

@@ -270,6 +270,16 @@ Phase 2 Tooling ships a working editor: ImGui-driven chrome with the Claude Desi
   - [—] **NSEvent direct capture for editor-off mode** — M26b. Tracked as `P3-INPUT-EDITOR-OFF-001`. Without the editor the demo's camera stays static (matches Phase 1 behaviour).
   - [—] **Orthographic cameras + selector (Top / Front / Side / Persp + 1/3/7/0 hotkeys)** — M26b. Tracked as `P3-CAM-ORTHO-001`.
   - [—] **F = frame selection** — needs scene-selection bbox plumbing. Phase 3 polish.
+- [x] **M27 — Viewport object picking (closest-hit ray-vs-AABB)**
+  - [x] **`mge::math::Ray` + `ray_aabb_intersect`** — slab-method intersection in `engine/math/aabb.h`. Branch-free across the three axes; handles parallel-ray slabs + ray-origin-inside-box → `t_near = 0`. Returns `{hit, t_near}`.
+  - [x] **`Camera::ray_from_ndc(ndc_x, ndc_y)`** — unprojects a Metal-NDC point through `inverse(view_projection())` at near and far, returning a world-space `Ray` with the camera eye as origin.
+  - [x] **`mge::scene::Pickable` + `closest_hit`** — `{aabb, tag, index}` POD + an O(n) closest-hit scan in `engine/scene/picker.h`. Tag/index are opaque to the picker; the demo encodes `SelectionKind` + per-kind index.
+  - [x] **Demo**: LMB-press inside the viewport (no modifiers) rebuilds a pickables list (5 spheres + skinned tube + glTF mesh + every cube in the field), casts a ray from `mouse_pos → NDC → world`, and writes the closest hit into `editor->selection()`. The Outliner highlight + Sphere Inspector pick up the new selection on the next frame. Terminal logs the hit as `[hello_metal] selected: Sphere[2] t=4.32`.
+  - [x] **9 new unit tests** — ray-vs-AABB (straight hit / miss / inside / parallel-slab / oblique-corner), closest-hit (no hit / nearest-of-two), Camera::ray_from_ndc (center → view forward / center → hits centered AABB). **103/103 tests green**.
+  - [—] **Selection outline overlay in the viewport** — M27b. Today the user sees the selection via Outliner highlight + Inspector contents; an extrusion-outline pass (re-draw the selected mesh at 1.05× scale with front-face cull in amber) lands in a follow-up.
+  - [—] **Marquee / box selection** — Phase 3 polish.
+- [ ] M27b — Selection outline overlay in the viewport
+- [ ] M28 — Transform gizmo (translate/rotate/scale via ImGuizmo) + Inspector transform fields (ADR-0016)
 - [ ] M25d — Normal + MR maps on glTF assets
 - [ ] M26b — NSEvent direct capture + ortho cameras + viewport selector
 - [ ] ECS proper (archetype storage)

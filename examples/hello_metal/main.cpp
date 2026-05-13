@@ -37,6 +37,7 @@
 #include "mge/scene/camera.h"
 #include "mge/scene/camera_controller.h"
 #include "mge/scene/input_state.h"
+#include "mge/scene/picker.h"
 
 #include "font8x8.h"
 
@@ -2562,6 +2563,14 @@ int run_windowed(Args a) {
     fly.sync_from(camera);
     orbit.apply(camera);
 
+    // M27 — Selectable scene entities. Tag = SelectionKind enum value;
+    // index = the kind-specific index (sphere idx, cube idx, etc.).
+    // Rebuilt each frame so dynamic transforms (the wobbly tube, future
+    // animated meshes) stay in sync with the picker.
+    using SK = mge::editor::SelectionKind;
+    std::vector<mge::scene::Pickable> pickables;
+    pickables.reserve(cubes_proto.size() + 8);
+
     FrameGraph fg(*r->device);
 
     DemoCvars cvars{};
@@ -2637,6 +2646,94 @@ int run_windowed(Args a) {
                 orbit.update(camera, in_state, ctrl_dt);
             } else {
                 fly.update(camera, in_state, ctrl_dt);
+            }
+
+            // M27 — LMB-press inside the viewport (no modifiers) picks the
+            // closest scene entity under the cursor and writes it into the
+            // editor's Selection. Outliner + Inspector pick it up next
+            // frame. No visual outline yet (M27b).
+            const bool plain_click =
+                in_state.is_pressed(mge::scene::Button::Left)
+                && in_state.viewport_hovered
+                && !in_state.mods.alt && !in_state.mods.shift
+                && !in_state.mods.ctrl && !in_state.mods.super;
+            if (plain_click) {
+                // Rebuild the pickables list against the current scene state.
+                pickables.clear();
+                // Sphere AABBs — radius 0.6 m around each sphere center.
+                constexpr float kSphereR = 0.6f;
+                for (std::uint32_t i = 0; i < k_spheres.size(); ++i) {
+                    const auto& s = k_spheres[i];
+                    pickables.push_back({
+                        mge::math::Aabb::from_points(
+                            {s.position.x - kSphereR, s.position.y - kSphereR, s.position.z - kSphereR},
+                            {s.position.x + kSphereR, s.position.y + kSphereR, s.position.z + kSphereR}),
+                        static_cast<std::uint32_t>(SK::Sphere), i,
+                    });
+                }
+                // Skinned tube — wraps the demo's tube transform translation.
+                {
+                    const float h = r->tube_height;
+                    const float rr = 0.20f;
+                    pickables.push_back({
+                        mge::math::Aabb::from_points(
+                            { 0.0f - rr, 0.0f,     3.6f - rr},
+                            { 0.0f + rr, h,         3.6f + rr}),
+                        static_cast<std::uint32_t>(SK::SkinnedTube), 0,
+                    });
+                }
+                // glTF mesh — use the fit-to-box transform's translation +
+                // the 1.5 m target box.
+                {
+                    constexpr float k = 0.75f;
+                    pickables.push_back({
+                        mge::math::Aabb::from_points(
+                            {1.2f - k, 2.5f - k, -1.5f - k},
+                            {1.2f + k, 2.5f + k, -1.5f + k}),
+                        static_cast<std::uint32_t>(SK::Scene), 0,
+                    });
+                }
+                // Cube field — every cube is an individual pickable.
+                for (std::uint32_t i = 0; i < cubes_proto.size(); ++i) {
+                    pickables.push_back({
+                        cube_world_aabb(cubes_proto[i]),
+                        static_cast<std::uint32_t>(SK::CubeField), i,
+                    });
+                }
+
+                // Mouse → NDC. mouse_pos_{x,y} are in logical points
+                // (same space the ImGui OSX backend uses); Window::width()
+                // / height() are also in logical points. So we normalise
+                // against the window logical size for the [-1, 1] NDC.
+                const float win_w = std::max(1.0f,
+                    static_cast<float>(window.width()));
+                const float win_h = std::max(1.0f,
+                    static_cast<float>(window.height()));
+                const float ndc_x =  (in_state.mouse_pos_x / win_w) * 2.0f - 1.0f;
+                const float ndc_y = -((in_state.mouse_pos_y / win_h) * 2.0f - 1.0f);
+
+                const auto ray = camera.ray_from_ndc(ndc_x, ndc_y);
+                const auto hit = mge::scene::closest_hit(
+                    ray, std::span<const mge::scene::Pickable>(pickables));
+                auto& sel = editor->selection();
+                if (hit.has_value()) {
+                    const auto& p = pickables[hit->pickable_index];
+                    sel.kind  = static_cast<SK>(p.tag);
+                    sel.index = p.index;
+                    const char* kind_name =
+                        sel.kind == SK::Sphere       ? "Sphere"  :
+                        sel.kind == SK::CubeField    ? "Cube"    :
+                        sel.kind == SK::SkinnedTube  ? "Tube"    :
+                        sel.kind == SK::Scene        ? "glTF"    : "Other";
+                    std::printf("[hello_metal] selected: %s[%u]  t=%.2f\n",
+                                kind_name, p.index, static_cast<double>(hit->t));
+                    std::fflush(stdout);
+                } else {
+                    sel.kind  = SK::None;
+                    sel.index = 0;
+                    std::printf("[hello_metal] selection cleared\n");
+                    std::fflush(stdout);
+                }
             }
         }
 

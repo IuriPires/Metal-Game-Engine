@@ -15,6 +15,7 @@ add_executable(mge_unit_tests
     test_memory.cpp
     test_camera.cpp
     test_camera_controller.cpp
+    test_picker.cpp
     test_primitives.cpp
     test_pbr_primitives.cpp
     test_frustum.cpp
